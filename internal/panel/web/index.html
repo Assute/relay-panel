@@ -671,7 +671,7 @@ function viewHome(){
     <div class="hd"><h3>节点顺序</h3><div class="sp"></div>
       <span class="dim sm">域名指当前这台，用满自动切下一台</span></div>
     <div class="bd flush">
-      <table style="width:auto"><thead><tr><th style="width:56px">#</th><th style="width:240px">节点</th><th style="width:110px">状态</th><th style="width:130px">速率</th><th style="width:250px">用量</th><th style="width:110px">最近心跳</th></tr></thead><tbody>
+      <table><thead><tr><th style="width:56px">#</th><th style="width:280px">节点</th><th style="width:110px">状态</th><th style="width:150px">速率</th><th>用量</th><th style="width:110px">最近心跳</th></tr></thead><tbody>
       ${exits.length?exits.map(x=>{
         const n=x.node, isCur=S.cur.current_node===n.id;
         return `<tr data-node="${n.id}">
@@ -841,13 +841,13 @@ function viewNodes(){
       <button class="primary" onclick="dlgNode()">${I.plus} 添加节点</button>
     </div>
     <div class="bd flush">
-      <table style="width:auto"><thead><tr>
+      <table><thead><tr>
         <th style="width:38px"><input type="checkbox" onchange="selAll(this,'node')"></th>
-        <th style="width:52px">顺序</th><th style="width:300px">节点</th>
+        <th style="width:52px">顺序</th><th style="width:360px">节点</th>
         <th style="width:96px">状态</th>
-        <th style="width:90px">上行</th>
-        <th style="width:90px">下行</th>
-        <th style="width:160px">负载</th>
+        <th style="width:110px">上行</th>
+        <th style="width:110px">下行</th>
+        <th>负载</th>
         <th style="width:84px">在线</th>
         <th>本周期用量</th>
         <th style="width:150px" class="ops">操作</th>
