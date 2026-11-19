@@ -411,7 +411,7 @@ function renderLogin(){
   <div class="login"><div class="box">
     <div class="lg"><b>中转面板</b></div>
     <label>用户名</label>
-    <input id="lu" type="text" value="admin" autocomplete="username">
+    <input id="lu" type="text" value="123456" autocomplete="username">
     <label>密码</label>
     <input id="lp" type="password" autocomplete="current-password">
     <div class="err" id="lerr"></div>
@@ -468,11 +468,14 @@ function render(){
     <main>
       <header class="topbar">
         <h1>${NAV.find(n=>n.k===S.view)?.t||''}</h1>
-        ${S.groups.length>1?`
-          <select id="gsel" style="width:auto;min-width:150px" onchange="pickGroup(this.value)">
+        ${S.groups.length?`
+          <select id="gsel" style="width:auto;min-width:130px" onchange="pickGroup(this.value)"
+            title="切换分组">
             ${S.groups.map(x=>`<option value="${x.group.id}" ${S.cur&&S.cur.id===x.group.id?'selected':''}>${esc(x.group.name)}</option>`).join('')}
-          </select>`:`
-          ${S.cur?`<span class="chip">${esc(S.cur.name)}</span>`:''}`}
+          </select>
+          <button class="ghost icon" title="新建分组" onclick="dlgGroup(1)">${I.plus}</button>
+          <button class="ghost icon" title="编辑当前分组" onclick="dlgGroup(0)">${I.edit}</button>
+        `:`<button class="ghost" onclick="dlgGroup(1)">${I.plus} 新建分组</button>`}
         <div class="sp"></div>
         <span class="chip">当前 <b>${curName}</b></span>
         <button class="ghost icon" title="刷新" onclick="refresh()">${I.refresh}</button>
@@ -907,8 +910,8 @@ function modal(title, bodyHtml, footHtml){
 const closeDlg = () => document.querySelector('dialog')?.close();
 
 /* ---------- 分组 ---------- */
-function dlgGroup(){
-  const g = S.cur;
+function dlgGroup(isNew){
+  const g = (isNew || !S.cur) ? null : S.cur;
   modal(g?'编辑分组':'新建分组', `
     <label>分组名</label>
     <input id="f_name" type="text" value="${g?esc(g.name):''}" placeholder="例如：日本线路">
@@ -1051,7 +1054,17 @@ function copyCmd(){
 /* ---------- 线路 ---------- */
 function dlgRule(id){
   const r = id ? S.rules.find(x=>x.id===id) : null;
+  const gname = r ? (S.groups.find(x=>x.group.id===r.group_id)?.group.name || S.cur.name) : '';
   modal(r?'编辑线路':'添加转发线路', `
+    ${r
+      ? `<label>所属分组</label>
+         <div style="padding:7px 0;color:var(--txt)">${esc(gname)}</div>
+         <div class="hint" style="margin-top:0">要换分组请删掉重建，端口规则按分组校验。</div>`
+      : `<label>所属分组</label>
+         <select id="r_gid">
+           ${S.groups.map(x=>`<option value="${x.group.id}" ${S.cur&&S.cur.id===x.group.id?'selected':''}>${esc(x.group.name)}</option>`).join('')}
+         </select>
+         <div class="hint" style="margin-top:0">规则会同步到这个分组里的所有节点。</div>`}
     <label>名称</label>
     <input id="r_name" type="text" value="${r?esc(r.name||''):''}" placeholder="新加坡">
     <label>监听端口（域名后面那个端口）</label>
@@ -1085,11 +1098,24 @@ async function saveRule(id){
     alert('监听端口、目标地址、目标端口都要填');
     return;
   }
+  const gid = id ? 0 : (parseInt($('#r_gid')?.value||'0',10) || S.cur.id);
   try{
-    if(id) await api('PATCH','/api/rules/'+id, body);
-    else   await api('POST','/api/groups/'+S.cur.id+'/rules', body);
-    closeDlg(); await loadGroup(S.cur.id); render();
-    toast(id?'线路已保存':'线路已创建，节点 15 秒内开始监听');
+    if(id){
+      await api('PATCH','/api/rules/'+id, body);
+      closeDlg(); await loadGroup(S.cur.id); render();
+      toast('线路已保存');
+    }else{
+      await api('POST','/api/groups/'+gid+'/rules', body);
+      closeDlg();
+      if(gid !== S.cur.id){
+        const g = S.groups.find(x=>x.group.id===gid)?.group;
+        await reload(); render();
+        toast('已添加到「'+(g?g.name:'该分组')+'」，切换分组后可见');
+      }else{
+        await loadGroup(S.cur.id); render();
+        toast('线路已创建，节点 15 秒内开始监听');
+      }
+    }
   }catch(e){ alert(e.message); }
 }
 
