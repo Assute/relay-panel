@@ -134,6 +134,17 @@ human_size() {
   fi
 }
 
+# 只改 URL 里的端口，域名形式（无端口）原样返回
+fix_url_port() {  # fix_url_port 旧地址 新端口
+  local u="$1" np="$2"
+  [ -z "$u" ] && { echo ""; return; }
+  if echo "$u" | grep -qE '^[a-zA-Z]+://[^/:]+:[0-9]+/?$'; then
+    echo "$u" | sed "s|:\([0-9]\+\)/?$|:$np|"
+  else
+    echo "$u"
+  fi
+}
+
 # ---------- 3 状态 ----------
 do_status() {
   echo ""
@@ -282,8 +293,27 @@ do_install() {
 
   echo "[2/5] 写配置 $CONF"
   if [ -f "$CONF" ]; then
-    note "配置已存在，保留原有设置"
-    sed -i "s/\"admin_user\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"admin_user\": \"$ADMIN_USER\"/" "$CONF" 2>/dev/null || true
+    local old_listen old_url
+    old_listen=$(get_conf listen)
+    old_url=$(get_conf public_url)
+    note "配置已存在，数据保留"
+
+    # 端口：以本次运行的 LISTEN 为准
+    if [ -n "$old_listen" ] && [ "$old_listen" != "$LISTEN" ]; then
+      note "监听 $old_listen → $LISTEN"
+    fi
+    sed -i "s|\"listen\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"listen\": \"$LISTEN\"|" "$CONF" 2>/dev/null || true
+
+    # 外网地址：没显式给就沿用旧的，但端口必须跟监听一致
+    if [ -z "$PUBLIC_URL" ]; then
+      PUBLIC_URL=$(fix_url_port "$old_url" "${LISTEN##*:}")
+    fi
+    if [ -n "$PUBLIC_URL" ] && [ "$PUBLIC_URL" != "$old_url" ]; then
+      note "外网地址 $old_url → $PUBLIC_URL"
+      sed -i "s|\"public_url\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"public_url\": \"$PUBLIC_URL\"|" "$CONF" 2>/dev/null || true
+    fi
+
+    sed -i "s|\"admin_user\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"admin_user\": \"$ADMIN_USER\"|" "$CONF" 2>/dev/null || true
   else
     cat > "$CONF" <<EOF
 {
