@@ -926,14 +926,20 @@ type beatResp struct {
 	Config     *agentConfig `json:"config,omitempty"`
 }
 
+// defaultProbeTarget 默认连通性探测目标。
+//
+// 用来判断这个 IP 还能不能被境内正常访问：被封掉的 IP 到境内通常双向不通，
+// 节点每分钟拨一次这个境内地址，超时就当「被墙」处理。
+// 挑 CDN 域名而不是裸 IP——CDN 会轮换节点，单个 IP 挂了不代表你被墙。
+const defaultProbeTarget = "gd-cu-v4.ip.zstaticcdn.com:80"
+
 // probeTargetFor 决定这个节点该探哪个目标。优先级：
 //  1. 节点上手工填的（probe_target_custom）
 //  2. 分组上填的（一组一条线路，填一次全组生效）
-//  3. 该分组第一条启用线路的上游 host:port
-//  4. 都没有 → 不探测
+//  3. 内置默认目标（defaultProbeTarget）
 //
-// 填境内地址（比如某个国内 CDN 的 80 端口）就能当「IP 是否被墙」的探针：
-// 被封的 IP 到境内通常双向不通，拨号会超时。
+// 默认探境内地址是为了测「IP 是否被墙」；想改成探上游也可以，
+// 在分组或节点上填 target_host:target_port 就覆盖掉了。
 func (a *API) probeTargetFor(n *Node) string {
 	if s := strings.TrimSpace(n.ProbeTargetCustom); s != "" {
 		return s
@@ -943,12 +949,7 @@ func (a *API) probeTargetFor(n *Node) string {
 			return s
 		}
 	}
-	for _, rl := range a.store.Rules(n.GroupID) {
-		if rl.Enabled && rl.TargetHost != "" && rl.TargetPort > 0 {
-			return net.JoinHostPort(rl.TargetHost, strconv.Itoa(rl.TargetPort))
-		}
-	}
-	return ""
+	return defaultProbeTarget
 }
 
 // statsReq 实时指标快通道：只有展示用的数字，不带配置也不动账本。

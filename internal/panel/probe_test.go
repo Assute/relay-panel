@@ -168,8 +168,8 @@ func TestProbeTargetFromRules(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
-	if out.ProbeTarget != "up.example.com:443" {
-		t.Fatalf("心跳下发的探测目标应该是第一条启用线路的上游，实际 %q", out.ProbeTarget)
+	if out.ProbeTarget != defaultProbeTarget {
+		t.Fatalf("没有任何覆盖时应下发内置默认目标 %q，实际 %q", defaultProbeTarget, out.ProbeTarget)
 	}
 	_ = n
 }
@@ -293,7 +293,7 @@ func TestProbeTargetCustomWins(t *testing.T) {
 		t.Fatal(err)
 	}
 	r2.Body.Close()
-	if got := beat(); got != "up.example.com:443" {
-		t.Fatalf("清空自定义目标后应回退到规则上游，实际 %q", got)
+	if got := beat(); got != defaultProbeTarget {
+		t.Fatalf("清空自定义目标后应回退到默认目标 %q，实际 %q", defaultProbeTarget, got)
 	}
 }
