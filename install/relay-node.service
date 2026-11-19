@@ -1,0 +1,15 @@
+[Unit]
+Description=Relay Node Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/relay-node -config /etc/relay/config.json
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+# 网卡读数需要普通权限即可；若开启 TPROXY 之类才需要更多 capabilities
+
+[Install]
+WantedBy=multi-user.target

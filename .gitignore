@@ -1,0 +1,34 @@
+# 编译产物
+/bin/
+/pkg/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# 发布包
+/build/
+/release/
+/dist/
+
+# 运行时数据（含密码哈希、token、Cloudflare 凭据，绝对不能提交）
+data.json
+data.json.tmp
+config.json
+*.state
+*.key
+*.log
+
+# 测试与临时文件
+/_test/
+_test/
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
