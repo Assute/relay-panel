@@ -396,7 +396,7 @@ function onlineCell(x){
 function probeCell(x){
   const n = x.node;
   if(!n.probe_target) return '<span class="dim">—</span>';
-  const tgt = `<div class="sm dim mono">${esc(n.probe_target)}</div>`;
+  const tgt = `<div class="dim mono" style="white-space:nowrap;font-size:11px" title="${esc(n.probe_target)}">${esc(n.probe_target)}</div>`;
   if(!n.probe_done) return `<span class="dim">探测中…</span>${tgt}`;
   if(n.unreachable){
     return `<span style="color:var(--err)">连续超时 ${n.probe_fails}/3</span>${tgt}`;
@@ -859,15 +859,15 @@ function viewNodes(){
     <div class="bd flush">
       <table><thead><tr>
         <th style="width:38px"><input type="checkbox" onchange="selAll(this,'node')"></th>
-        <th style="width:52px">顺序</th><th style="width:360px">节点</th>
+        <th style="width:52px">顺序</th><th style="width:340px">节点</th>
         <th style="width:96px">状态</th>
-        <th style="width:110px">上行</th>
-        <th style="width:110px">下行</th>
+        <th style="width:100px">上行</th>
+        <th style="width:100px">下行</th>
         <th>负载</th>
-        <th style="width:110px">连通性</th>
+        <th style="width:250px">连通性</th>
         <th style="width:84px">在线</th>
         <th>本周期用量</th>
-        <th style="width:170px" class="ops">操作</th>
+        <th style="width:160px" class="ops">操作</th>
       </tr></thead><tbody>
       ${S.nodes.length?S.nodes.map(x=>{
         const n=x.node, isCur=S.cur.current_node===n.id;
