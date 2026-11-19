@@ -20,9 +20,10 @@ LISTEN="127.0.0.1:3070"
 PUBLIC_URL=""
 ADMIN_USER="123456"
 ADMIN_PASS="123456"
+# raw 无缓存永远最新，优先；jsDelivr 作备用（它有 CDN 缓存，更新可能滞后几小时）
 REPO_BASES=(
-  "https://cdn.jsdelivr.net/gh/Assute/relay-panel@main/dl"
   "https://raw.githubusercontent.com/Assute/relay-panel/main/dl"
+  "https://cdn.jsdelivr.net/gh/Assute/relay-panel@main/dl"
 )
 
 BIN="$APP_DIR/panel"
