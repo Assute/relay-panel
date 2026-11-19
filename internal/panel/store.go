@@ -575,6 +575,27 @@ func (s *Store) AuthAgent(key, fp string) (nodeID int64, sessionKey string, fres
 	return 0, "", false, errors.New("token_invalid")
 }
 
+// ResetNodeKey 重新生成对接 token，清掉会话和指纹，让节点可以重新接入。
+// 节点原来的 session_key 会立刻失效，需要重装。
+func (s *Store) ResetNodeKey(id int64) *Node {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.db.Nodes {
+		if s.db.Nodes[i].ID != id {
+			continue
+		}
+		s.db.Nodes[i].Token = randHex(24)
+		s.db.Nodes[i].SessionKey = ""
+		s.db.Nodes[i].Fingerprint = ""
+		s.db.Nodes[i].Status = StatusPending
+		s.db.Nodes[i].LastSeen = 0
+		_ = s.save()
+		n := s.db.Nodes[i]
+		return &n
+	}
+	return nil
+}
+
 // AcceptBeat 处理一次心跳上报，返回需要下发的配置版本
 func (s *Store) AcceptBeat(nodeID, nicAcc, relayAcc, ver int64) (wantVersion int64) {
 	s.mu.Lock()

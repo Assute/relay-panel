@@ -763,6 +763,8 @@ function viewNodes(){
           <td class="sm">${rttText(n.rtt)}</td>
           <td class="sm dim">${ago(n.last_seen)}</td>
           <td class="ops">
+            <button class="icon ghost" title="复制对接命令" onclick="nodeCmd(${n.id})">${I.copy}</button>
+            <button class="icon ghost" title="复制对接命令" onclick="nodeCmd(${n.id})">${I.copy}</button>
             <button class="icon ghost" title="编辑" onclick="dlgNode(${n.id})">${I.edit}</button>
             ${isCur?'':(n.ip?`<button class="icon ghost" title="切到这台" onclick="promote(${n.id})">${I.swap}</button>`:`<button class="icon ghost" disabled title="IP 未上报，无法切换">${I.swap}</button>`)}
             <button class="icon ghost" title="清零本周期" onclick="resetNode(${n.id})">${I.broom}</button>
@@ -1156,6 +1158,21 @@ async function copyText(t){
     document.body.removeChild(ta);
     return ok;
   }catch(e){ return false; }
+}
+
+async function nodeCmd(id){
+  try{
+    const r = await api('POST','/api/nodes/'+id+'/cmd',{});
+    if(r.need_reset){
+      if(confirm(r.message + '\n\n重新生成并查看命令？')){
+        const r2 = await api('POST','/api/nodes/'+id+'/cmd',{reset:true});
+        showCmd(r2.cmd);
+        await reload(); render();
+      }
+      return;
+    }
+    showCmd(r.cmd);
+  }catch(e){ alert(e.message); }
 }
 
 async function copyCmd(){

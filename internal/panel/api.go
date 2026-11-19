@@ -79,6 +79,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/groups/{id}/dns-test", a.auth(http.HandlerFunc(a.testGroupDNS)))
 	mux.Handle("POST /api/groups/{id}/sync-dns", a.auth(http.HandlerFunc(a.syncGroupDNS)))
 	mux.Handle("GET /api/rules", a.auth(http.HandlerFunc(a.AllRules)))
+	mux.Handle("POST /api/nodes/{id}/cmd", a.auth(http.HandlerFunc(a.nodeCmd)))
 
 	mux.Handle("/", webHandler())
 
@@ -351,6 +352,47 @@ func (a *API) createNode(w http.ResponseWriter, r *http.Request) {
 		"node":  n,
 		"token": n.Token,
 		"cmd":   a.buildInstallCmd(n.Token),
+	})
+}
+
+// nodeCmd 返回某个节点的对接命令。token 用一次就作废，
+// 已接入的节点需要传 reset=1 重新生成（会让旧节点掉线）。
+func (a *API) nodeCmd(w http.ResponseWriter, r *http.Request) {
+	n := a.store.Node(pathID(r, "id"))
+	if n == nil {
+		writeJSON(w, 404, map[string]string{"error": "节点不存在"})
+		return
+	}
+	if strings.TrimSpace(a.cnf.PublicURL) == "" {
+		writeJSON(w, 400, map[string]string{"error": "先在设置页填 Public URL，命令里要用"})
+		return
+	}
+
+	var in struct {
+		Reset bool `json:"reset"`
+	}
+	_ = readJSON(r, &in)
+
+	if strings.HasPrefix(n.Token, "used-") && !in.Reset {
+		writeJSON(w, 200, map[string]any{
+			"need_reset": true,
+			"message":    "该节点已接入过，原命令已失效。重新生成会让它掉线，需要在机器上重装。",
+		})
+		return
+	}
+	if in.Reset {
+		n = a.store.ResetNodeKey(n.ID)
+		if n == nil {
+			writeJSON(w, 500, map[string]string{"error": "重置失败"})
+			return
+		}
+		log.Printf("node %d (%s): 重新生成对接 token", n.ID, n.Name)
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"cmd":   a.buildInstallCmd(n.Token),
+		"token": n.Token,
+		"reset": in.Reset,
 	})
 }
 
