@@ -709,9 +709,10 @@ func maskToken(t string) string {
 func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 	tok := a.cnf.Token()
 	writeJSON(w, 200, map[string]any{
-		"public_url":           a.cnf.PublicURL,
-		"db_path":              a.cnf.DB,
-		"cloudflare_token_set": tok != "",
+		"build":                 BuildStamp,
+		"public_url":            a.cnf.PublicURL,
+		"db_path":               a.cnf.DB,
+		"cloudflare_token_set":  tok != "",
 		"cloudflare_token_mask": maskToken(tok),
 	})
 }

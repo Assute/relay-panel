@@ -852,6 +852,15 @@ function viewSettings(){
     <div class="hd"><h3>数据文件</h3><div class="sp"></div>
       <span class="dim sm">备份直接复制这个文件</span></div>
     <div class="bd"><span class="mono dim">${esc(st.db_path||'')}</span></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="hd"><h3>程序版本</h3><div class="sp"></div>
+      <span class="tag t-grey">${esc(st.build||'dev')}</span></div>
+    <div class="bd">
+      <span class="dim sm">更新面板后看这里，版本号变了才说明二进制真的换了。<br>
+      如果还是老版本，多半是下载走了 CDN 缓存，用带 ?t= 时间戳的地址重下。</span>
+    </div>
   </div>`;
 }
 
