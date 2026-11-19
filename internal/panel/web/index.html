@@ -1230,6 +1230,12 @@ function dlgNode(id){
     <input id="n_quota" type="number" value="${n?Math.round(n.quota_bytes/1073741824):200}">
     <div class="hint">按商家后台填。面板自动留 5% 余量，不用自己减。</div>
 
+    <label>连通性探测目标（可选）</label>
+    <input id="n_probe" type="text" value="${n?esc(n.probe_target_custom||''):''}" placeholder="留空 = 用第一条线路的上游">
+    <div class="hint">节点每分钟拨一次这个 TCP 端口，连续三次不通就把这台切走。<br>
+      留空时探「第一条启用线路的 target_host:target_port」——那才是这台机器真正要转发到的地方。<br>
+      填个公网地址只能证明机器能上网，测不出转发链路断没断。</div>
+
     <label style="display:flex;align-items:center;gap:9px;cursor:pointer;margin-top:16px;color:var(--txt)">
       <input type="checkbox" id="n_backup" ${n&&n.is_backup?'checked':''} style="width:auto;margin:0">
       <span>设为备用节点</span>
@@ -1254,6 +1260,7 @@ async function saveNode(id){
     bill_mode: $('#n_bill').value,
     quota_gb: parseInt($('#n_quota').value||'0',10),
     is_backup: !!$('#n_backup')?.checked,
+    probe_target_custom: ($('#n_probe')?.value||'').trim(),
   };
   if($('#n_order')) body.sort_order = parseInt($('#n_order').value||'0',10);
   if(!body.name){ alert('名称必填'); return; }

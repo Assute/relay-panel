@@ -173,3 +173,75 @@ func TestProbeTargetFromRules(t *testing.T) {
 	}
 	_ = n
 }
+
+// 人工填了探测目标：优先用人工的，忽略规则
+func TestProbeTargetCustomWins(t *testing.T) {
+	store, srv, n := newProbeFixture(t)
+	if _, err := store.CreateRule(Rule{
+		GroupID: 1, Name: "r1", ListenPort: 20001,
+		TargetHost: "up.example.com", TargetPort: 443, Protocol: "tcp", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 走真实接口改一次节点
+	sid := loginSID(t, srv.URL, "admin", "pw")
+	req, _ := http.NewRequest("PATCH", fmt.Sprintf("%s/api/nodes/%d", srv.URL, n.ID),
+		strings.NewReader(`{"probe_target_custom":"gd-cu-v4.ip.zstaticcdn.com:80"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "sid", Value: sid})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("改探测目标 HTTP %d", resp.StatusCode)
+	}
+	if got := store.Node(n.ID).ProbeTargetCustom; got != "gd-cu-v4.ip.zstaticcdn.com:80" {
+		t.Fatalf("自定义目标没存下来: %q", got)
+	}
+
+	// token 第一次用就被换成 session_key，后面的请求必须跟着换
+	key := n.Token
+	beat := func() string {
+		body := fmt.Sprintf(`{"key":%q,"fingerprint":"fp","iface":"ens5","nic_acc":0,"relay_acc":0,"version":0,"agent":"x"}`, key)
+		r, err := http.Post(srv.URL+"/agent/beat", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		var out struct {
+			ProbeTarget string `json:"probe_target"`
+			SessionKey  string `json:"session_key"`
+			OK          bool   `json:"ok"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		if !out.OK {
+			t.Fatalf("心跳被拒")
+		}
+		if out.SessionKey != "" {
+			key = out.SessionKey
+		}
+		return out.ProbeTarget
+	}
+	if got := beat(); got != "gd-cu-v4.ip.zstaticcdn.com:80" {
+		t.Fatalf("人工目标应该覆盖规则的，实际 %q", got)
+	}
+
+	// 清空后回到用规则推导
+	req2, _ := http.NewRequest("PATCH", fmt.Sprintf("%s/api/nodes/%d", srv.URL, n.ID),
+		strings.NewReader(`{"probe_target_custom":""}`))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.AddCookie(&http.Cookie{Name: "sid", Value: sid})
+	r2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Body.Close()
+	if got := beat(); got != "up.example.com:443" {
+		t.Fatalf("清空自定义目标后应回退到规则上游，实际 %q", got)
+	}
+}

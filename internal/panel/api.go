@@ -322,6 +322,8 @@ func (a *API) createNode(w http.ResponseWriter, r *http.Request) {
 		IsBackup bool   `json:"is_backup"`
 		Role     string `json:"role"`
 		Forward  *bool  `json:"forward"`
+		// ProbeTarget 留空则用第一条线路的上游
+		ProbeTarget string `json:"probe_target_custom"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
@@ -339,14 +341,15 @@ func (a *API) createNode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	n, err := a.store.CreateNode(Node{
-		GroupID:    gid,
-		Name:       in.Name,
-		IP:         in.IP,
-		Iface:      in.Iface,
-		BillMode:   in.BillMode,
-		QuotaBytes: in.QuotaGB * 1024 * 1024 * 1024,
-		SortOrder:  order,
-		Token:      randHex(24),
+		GroupID:           gid,
+		Name:              in.Name,
+		IP:                in.IP,
+		Iface:             in.Iface,
+		BillMode:          in.BillMode,
+		QuotaBytes:        in.QuotaGB * 1024 * 1024 * 1024,
+		SortOrder:         order,
+		ProbeTargetCustom: strings.TrimSpace(in.ProbeTarget),
+		Token:             randHex(24),
 		Role:       "node",
 		Forward:    true,
 		IsBackup:   in.IsBackup,
@@ -433,12 +436,17 @@ func (a *API) patchNode(w http.ResponseWriter, r *http.Request) {
 		SortOrder int    `json:"sort_order"`
 		Status    string `json:"status"`
 		IsBackup  *bool  `json:"is_backup"`
+		// ProbeTarget 指针：区分「没传」和「传了空字符串（清空自定义目标）」
+		ProbeTarget *string `json:"probe_target_custom"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
 		return
 	}
 	n := *old
+	if in.ProbeTarget != nil {
+		n.ProbeTargetCustom = strings.TrimSpace(*in.ProbeTarget)
+	}
 	if in.IsBackup != nil {
 		n.IsBackup = *in.IsBackup
 	}
@@ -916,9 +924,13 @@ type beatResp struct {
 }
 
 // probeTargetFor 决定这个节点该探哪个上游。
-// 同一组所有节点跑同一套规则，取第一条启用的线路目标即可代表
-// 「这台机器还能不能连上上游」。没有可用规则就不探。
+// 人工填了就用人工的；否则取该分组第一条启用线路的目标——
+// 同一组所有节点跑同一套规则，那才是这个节点真正要转发到的地方。
+// 探「随便一个公网地址」只能说明机器能上网，测不出转发链路断没断。
 func (a *API) probeTargetFor(n *Node) string {
+	if s := strings.TrimSpace(n.ProbeTargetCustom); s != "" {
+		return s
+	}
 	for _, rl := range a.store.Rules(n.GroupID) {
 		if rl.Enabled && rl.TargetHost != "" && rl.TargetPort > 0 {
 			return net.JoinHostPort(rl.TargetHost, strconv.Itoa(rl.TargetPort))

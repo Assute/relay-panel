@@ -93,7 +93,10 @@ type Node struct {
 	FirstSeen int64 `json:"first_seen"`
 
 	// 上游连通性：节点自己拨 TCP 得到的结果，面板据此判断它还能不能干活。
-	ProbeTarget string `json:"probe_target"` // host:port，空表示没配置
+	// ProbeTargetCustom 人工指定的探测目标（host:port）。
+	// 留空时用该分组第一条启用线路的上游——那才是这个节点真正要转发到的地方。
+	ProbeTargetCustom string `json:"probe_target_custom"`
+	ProbeTarget       string `json:"probe_target"` // host:port，空表示没配置
 	ProbeOK     bool   `json:"probe_ok"`
 	ProbeDone   bool   `json:"probe_done"` // 节点是否已经出过结果
 	ProbeFails  int    `json:"probe_fails"` // 连续失败次数，成功即归零
