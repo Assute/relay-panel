@@ -238,13 +238,22 @@ do_install() {
   if [ -z "$PUBLIC_URL" ] && [ "$reinst" = "true" ]; then
     PUBLIC_URL=$(get_conf public_url)
   fi
+  # 外网地址全自动识别，不打断安装
   if [ -z "$PUBLIC_URL" ]; then
-    local guess
-    guess="http://$(guess_ip):${LISTEN##*:}"
-    echo ""
-    note "外网地址用于生成节点一键接入命令"
-    note "节点必须能访问它，填错节点装不上"
-    PUBLIC_URL=$(ask "外网地址" "$guess")
+    local pip
+    pip=$(guess_ip)
+    if [ -z "$pip" ] || [ "$pip" = "127.0.0.1" ]; then
+      pip="127.0.0.1"
+      PUBLIC_URL="http://$pip:${LISTEN##*:}"
+      echo ""
+      note "无法识别公网 IP，先用 $PUBLIC_URL"
+      note "装好后到面板「设置」改成真实地址，否则节点装不上"
+    else
+      PUBLIC_URL="http://$pip:${LISTEN##*:}"
+      echo ""
+      note "自动识别外网地址: $PUBLIC_URL"
+      note "这是节点回连面板用的地址，不对可在面板「设置」里改"
+    fi
   fi
 
   if [ "$reinst" = "true" ]; then
