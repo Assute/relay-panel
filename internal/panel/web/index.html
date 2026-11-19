@@ -1041,14 +1041,39 @@ function showCmd(cmd){
   window.__cmd = cmd;
   modal('在节点服务器上执行', `
     <p class="hint" style="margin-top:0">以 root 执行。命令只显示这一次，跑完节点自动注册并拉取线路。</p>
-    <pre id="cmdtext">${esc(cmd)}</pre>
+    <pre id="cmdtext" style="user-select:text;-webkit-user-select:text">${esc(cmd)}</pre>
   `, `
     <button onclick="closeDlg()">关闭</button>
     <button class="primary" onclick="copyCmd()">${I.copy} 复制命令</button>
   `);
 }
-function copyCmd(){
-  navigator.clipboard.writeText(window.__cmd||'').then(()=>{ closeDlg(); toast('已复制到剪贴板'); });
+// 复制文本。HTTP 页面属于非安全上下文，navigator.clipboard 是 undefined，
+// 必须降级到 execCommand，否则点了毫无反应。
+async function copyText(t){
+  t = String(t || '');
+  if(window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText){
+    try{ await navigator.clipboard.writeText(t); return true; }catch(e){}
+  }
+  try{
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    ta.setAttribute('readonly','');
+    ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, t.length);
+    let ok = false;
+    try{ ok = document.execCommand('copy'); }catch(e){ ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }catch(e){ return false; }
+}
+
+async function copyCmd(){
+  const ok = await copyText(window.__cmd || '');
+  if(ok){ closeDlg(); toast('已复制到剪贴板'); }
+  else { toast('自动复制失败，请手动选中命令复制'); }
 }
 
 /* ---------- 线路 ---------- */
@@ -1168,8 +1193,10 @@ async function dlgExport(){
   }catch(e){ alert(e.message); }
 }
 
-function copyExport(){
-  navigator.clipboard.writeText(window.__exp||'').then(()=>{ closeDlg(); toast('已复制'); });
+async function copyExport(){
+  const ok = await copyText(window.__exp || '');
+  if(ok){ closeDlg(); toast('已复制'); }
+  else { toast('自动复制失败，请手动选中复制'); }
 }
 
 function downloadExport(){
