@@ -9,6 +9,8 @@
 package node
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -150,15 +152,49 @@ func (p *Prober) record(ok bool, rtt time.Duration, errMsg string) {
 	}
 	p.ok, p.rttMs, p.errMsg = false, 0, errMsg
 	p.fails++
-	log.Printf("连通性探测失败 %d/%d: %s (%s)", p.fails, probeMaxFails, p.target, errMsg)
+	// 日志里封顶显示成 3/3：一直不通就是一直不通，写成 7/3 没意义
+	shown := p.fails
+	if shown > probeMaxFails {
+		shown = probeMaxFails
+	}
+	log.Printf("连通性探测失败 %d/%d: %s (%s)", shown, probeMaxFails, p.target, errMsg)
 }
 
-func dialTCP(addr string, timeout time.Duration) (time.Duration, error) {
+// dialTCP 相当于一次 tcping：TCP 三次握手，握手完成就断开。
+// 不走 ICMP——很多 CDN/云主机直接把 ping 拦掉，但那不代表服务不可用。
+//
+// 解析和握手分开计时：域名解析慢不该算进 RTT，否则面板上的数字会被 DNS 拖成几百毫秒。
+// 但解析本身也要限时，系统 resolver 默认会重试好几轮，卡住就误判成超时。
+func dialTCP(target string, timeout time.Duration) (time.Duration, error) {
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		return 0, fmt.Errorf("目标应写成 host:port: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		return 0, fmt.Errorf("解析 %s 失败: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return 0, fmt.Errorf("解析 %s 没有结果", host)
+	}
+	// 优先 IPv4：目标本来就是 v4 地址，机器没 IPv6 时别去撞
+	pick := ips[0]
+	for _, ip := range ips {
+		if net.ParseIP(ip).To4() != nil {
+			pick = ip
+			break
+		}
+	}
+
 	start := time.Now()
-	c, err := net.DialTimeout("tcp", addr, timeout)
+	c, err := net.DialTimeout("tcp", net.JoinHostPort(pick, port), timeout)
 	if err != nil {
 		return 0, err
 	}
+	rtt := time.Since(start) // 只算握手时间
 	_ = c.Close()
-	return time.Since(start), nil
+	return rtt, nil
 }
