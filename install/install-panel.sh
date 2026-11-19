@@ -16,7 +16,7 @@
 set -uo pipefail
 
 APP_DIR="/opt/relay-panel"
-LISTEN="127.0.0.1:3070"
+LISTEN="0.0.0.0:3070"
 PUBLIC_URL=""
 ADMIN_USER="123456"
 ADMIN_PASS="123456"
@@ -113,6 +113,26 @@ guess_ip() {
       ;;
   esac
   echo "$ip"
+}
+
+# 放行本机防火墙，云厂商安全组仍需在控制台手动开
+open_firewall() {  # open_firewall 端口
+  local port="$1" did=0
+  if command -v ufw >/dev/null 2>&1; then
+    if ufw status 2>/dev/null | grep -qi "Status: active"; then
+      ufw allow "$port"/tcp >/dev/null 2>&1 && did=1
+    fi
+  fi
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    if firewall-cmd --state 2>/dev/null | grep -q running; then
+      firewall-cmd --permanent --add-port="$port"/tcp >/dev/null 2>&1 || true
+      firewall-cmd --reload >/dev/null 2>&1 || true
+      did=1
+    fi
+  fi
+  if [ "$did" = "1" ]; then
+    note "已放行本机防火墙 $port/tcp"
+  fi
 }
 
 # ---------- 状态辅助 ----------
@@ -382,13 +402,16 @@ EOF
     return
   fi
 
+  open_firewall "${LISTEN##*:}"
+
   echo ""
   echo "  ╔══════════════════════════════════════════"
   echo "  ║  安装完成"
   echo "  ╠══════════════════════════════════════════"
   echo "  ║  地址   ${PUBLIC_URL}"
   case "$LISTEN" in
-    127.0.0.1:*|localhost:*) echo "  ║  监听   $LISTEN（本机，外部需反代）" ;;
+    127.0.0.1:*|localhost:*) echo "  ║  监听   $LISTEN（仅本机，外部需反代）" ;;
+    0.0.0.0:*)               echo "  ║  监听   $LISTEN（外网可访问）" ;;
     *)                       echo "  ║  监听   $LISTEN" ;;
   esac
   echo "  ║  账号   $ADMIN_USER"
@@ -405,6 +428,14 @@ EOF
   echo "    3. 设置 → 填 Cloudflare Token → 点测试"
   echo "    4. 新建分组 → 填域名和 Zone → 点测试"
   echo "    5. 添加节点 → 复制命令到节点机执行"
+  echo ""
+  case "$LISTEN" in
+    0.0.0.0:*)
+      echo "  注意：面板暴露在公网，密码别用弱口令。"
+      echo "  如果浏览器还是打不开，多半是云厂商安全组没放行 ${LISTEN##*:} 端口，"
+      echo "  去控制台「安全组 / 防火墙」加一条入方向 TCP ${LISTEN##*:}。"
+      ;;
+  esac
 }
 
 # ---------- 2 改账号密码 ----------
