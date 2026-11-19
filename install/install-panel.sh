@@ -20,6 +20,7 @@ LISTEN="127.0.0.1:3070"
 PUBLIC_URL=""
 ADMIN_USER="123456"
 ADMIN_PASS="123456"
+URL_FROM_ARG=0      # --url 显式指定时置 1，此时不改它的端口
 # raw 无缓存永远最新，优先；jsDelivr 作备用（它有 CDN 缓存，更新可能滞后几小时）
 REPO_BASES=(
   "https://raw.githubusercontent.com/Assute/relay-panel/main/dl"
@@ -304,9 +305,9 @@ do_install() {
     fi
     sed -i "s|\"listen\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"listen\": \"$LISTEN\"|" "$CONF" 2>/dev/null || true
 
-    # 外网地址：没显式给就沿用旧的，但端口必须跟监听一致
-    if [ -z "$PUBLIC_URL" ]; then
-      PUBLIC_URL=$(fix_url_port "$old_url" "${LISTEN##*:}")
+    # 外网地址：显式 --url 不动；否则端口必须跟监听一致
+    if [ "$URL_FROM_ARG" = "0" ] && [ -n "$PUBLIC_URL" ]; then
+      PUBLIC_URL=$(fix_url_port "$PUBLIC_URL" "${LISTEN##*:}")
     fi
     if [ -n "$PUBLIC_URL" ] && [ "$PUBLIC_URL" != "$old_url" ]; then
       note "外网地址 $old_url → $PUBLIC_URL"
@@ -577,7 +578,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --port)      LISTEN="127.0.0.1:$2"; shift 2 ;;
     --listen)    LISTEN="$2"; shift 2 ;;
-    --url)       PUBLIC_URL="$2"; shift 2 ;;
+    --url)       PUBLIC_URL="$2"; URL_FROM_ARG=1; shift 2 ;;
     --user)      ADMIN_USER="$2"; shift 2 ;;
     --pass)      ADMIN_PASS="$2"; shift 2 ;;
     --dir)       APP_DIR="$2"; BIN="$APP_DIR/panel"; CONF="$APP_DIR/config.json"; DATA="$APP_DIR/data.json"; shift 2 ;;
