@@ -608,26 +608,40 @@ function viewRoutes(){
     <div class="bd flush">
       <table><thead><tr>
         <th style="width:38px"><input type="checkbox" onchange="selAll(this,'rule')"></th>
-        <th style="width:150px">名称</th>
-        <th style="width:130px">监听端口</th><th>转发目标</th>
-        <th style="width:80px">协议</th>
+        <th>入口 / 线路</th>
+        <th>连接地址</th>
+        <th>转发目标</th>
         <th style="width:90px">状态</th>
         <th style="width:130px" class="ops">操作</th>
       </tr></thead><tbody>
-      ${S.rules.length?S.rules.map(r=>`
-        <tr data-search="${esc(r.name||'')} ${r.listen_port} ${esc(r.target_host||'')}">
+      ${S.rules.length?S.rules.map(r=>{
+        const host = (S.cur.dns_name||'').trim();
+        const addr = host ? host+':'+r.listen_port : ':'+r.listen_port;
+        const cur = S.nodes.find(x=>x.node.id===S.cur.current_node)?.node;
+        return `
+        <tr data-search="${esc(r.name||'')} ${r.listen_port} ${esc(r.target_host||'')} ${esc(addr)}">
           <td><input type="checkbox" data-sel="rule" data-id="${r.id}" onchange="selOne(this)"></td>
-          <td>${esc(r.name||'—')}</td>
-          <td><span class="mono" style="font-weight:600">:${r.listen_port}</span></td>
-          <td><span class="mono">${esc(r.target_host)}:${r.target_port}</span></td>
-          <td><span class="tag t-grey">${esc((r.protocol||'tcp').toUpperCase())}</span></td>
+          <td>
+            <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+              <span>${esc(r.name||'—')}</span>
+              <span class="tag t-info">${esc(S.cur.name)}</span>
+              ${(r.protocol&&r.protocol!=='tcp')?`<span class="tag t-grey">${esc(r.protocol.toUpperCase())}</span>`:''}
+            </div>
+            <div class="dim sm">${cur?`→ ${esc(cur.name)} ${esc(cur.ip)}`:'→ 还没分配节点'}</div>
+          </td>
+          <td>
+            <span class="mono" style="font-weight:600;white-space:nowrap">${esc(addr)}</span>
+            ${host?'':'<div class="dim sm" style="color:var(--warn)">还没配域名，去分组里填</div>'}
+          </td>
+          <td><span class="mono" style="white-space:nowrap">${esc(r.target_host)}:${r.target_port}</span></td>
           <td>${r.enabled?'<span class="tag t-ok">启用</span>':'<span class="tag t-grey">停用</span>'}</td>
           <td class="ops">
             <button class="icon ghost" title="编辑" onclick="dlgRule(${r.id})">${I.edit}</button>
             <button class="icon ghost" title="${r.enabled?'停用':'启用'}" onclick="toggleRule(${r.id},${r.enabled?0:1})">${I.power}</button>
             <button class="icon ghost" title="删除" onclick="delRule(${r.id})">${I.trash}</button>
           </td>
-        </tr>`).join(''):`<tr><td colspan="7"><div class="empty">${I.empty}
+        </tr>`;
+      }).join(''):`<tr><td colspan="6"><div class="empty">${I.empty}
           <p>还没有转发线路。监听端口是域名后面那个端口，转发目标是流量要去的地方。</p>
           <button class="primary" onclick="dlgRule()">${I.plus} 添加第一条</button>
           <button onclick="dlgImport()">${I.upload} 批量导入</button></div></td></tr>`}
