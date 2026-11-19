@@ -189,6 +189,8 @@ type groupIn struct {
 	QuotaGB     int64  `json:"quota_gb"`
 	PeakMbps    int64  `json:"peak_mbps"`
 	ProbePort   int    `json:"probe_port"`
+	// ProbeTarget 该组节点的连通性探测目标（host:port）
+	ProbeTarget string `json:"probe_target"`
 	DNSProvider string `json:"dns_provider"`
 	DNSZone     string `json:"dns_zone"`
 	DNSName     string `json:"dns_name"`
@@ -203,6 +205,7 @@ func (in *groupIn) toGroup() Group {
 		QuotaBytes:  in.QuotaGB * 1024 * 1024 * 1024,
 		PeakBps:     in.PeakMbps * 1000 * 1000 / 8,
 		ProbePort:   in.ProbePort,
+		ProbeTarget: strings.TrimSpace(in.ProbeTarget),
 		DNSProvider: in.DNSProvider,
 		DNSZone:     strings.TrimSpace(in.DNSZone),
 		DNSName:     strings.TrimSpace(in.DNSName),
@@ -923,13 +926,22 @@ type beatResp struct {
 	Config     *agentConfig `json:"config,omitempty"`
 }
 
-// probeTargetFor 决定这个节点该探哪个上游。
-// 人工填了就用人工的；否则取该分组第一条启用线路的目标——
-// 同一组所有节点跑同一套规则，那才是这个节点真正要转发到的地方。
-// 探「随便一个公网地址」只能说明机器能上网，测不出转发链路断没断。
+// probeTargetFor 决定这个节点该探哪个目标。优先级：
+//  1. 节点上手工填的（probe_target_custom）
+//  2. 分组上填的（一组一条线路，填一次全组生效）
+//  3. 该分组第一条启用线路的上游 host:port
+//  4. 都没有 → 不探测
+//
+// 填境内地址（比如某个国内 CDN 的 80 端口）就能当「IP 是否被墙」的探针：
+// 被封的 IP 到境内通常双向不通，拨号会超时。
 func (a *API) probeTargetFor(n *Node) string {
 	if s := strings.TrimSpace(n.ProbeTargetCustom); s != "" {
 		return s
+	}
+	if g := a.store.Group(n.GroupID); g != nil {
+		if s := strings.TrimSpace(g.ProbeTarget); s != "" {
+			return s
+		}
 	}
 	for _, rl := range a.store.Rules(n.GroupID) {
 		if rl.Enabled && rl.TargetHost != "" && rl.TargetPort > 0 {

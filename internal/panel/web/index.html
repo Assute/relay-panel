@@ -1159,6 +1159,12 @@ function dlgGroup(isNew, gid){
     <label>探活端口</label>
     <input id="f_probe" type="number" value="${g?g.probe_port:0}">
     <div class="hint">切换前探测节点是否可达。填 0 表示不探测，只信心跳。</div>
+    <label>连通性探测目标（可选）</label>
+    <input id="f_probetarget" type="text" value="${g?esc(g.probe_target||''):''}" placeholder="例如 gd-cu-v4.ip.zstaticcdn.com:80">
+    <div class="hint">本组所有节点每分钟拨一次这个 host:port，连续三次超时就切走。<br>
+      填一个<b>境内</b>地址（比如国内 CDN 的 80 端口）就能当「IP 是否被墙」的探针：<br>
+      被封的 IP 到境内通常双向不通，拨号会超时。<br>
+      留空则探「第一条启用线路的上游」，那只能反映上游通不通。</div>
     <label>流量重置日（每月几号）</label>
     <input id="f_reset" type="number" min="1" max="28" value="${g?g.reset_day:1}">
 
@@ -1191,6 +1197,7 @@ async function saveGroup(id){
     remark: $('#f_remark').value.trim(),
     peak_mbps: parseInt($('#f_peak').value||'0',10),
     probe_port: parseInt($('#f_probe').value||'0',10),
+    probe_target: ($('#f_probetarget')?.value||'').trim(),
     reset_day: parseInt($('#f_reset').value||'1',10),
     quota_gb: 0,
     dns_provider: 'cloudflare',

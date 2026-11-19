@@ -174,7 +174,59 @@ func TestProbeTargetFromRules(t *testing.T) {
 	_ = n
 }
 
-// 人工填了探测目标：优先用人工的，忽略规则
+// 分组级探测目标：填一次，全组节点都用它（节点自己填的优先）
+func TestProbeTargetFromGroup(t *testing.T) {
+	store, srv, n := newProbeFixture(t)
+	if _, err := store.CreateRule(Rule{
+		GroupID: 1, Name: "r1", ListenPort: 20001,
+		TargetHost: "up.example.com", TargetPort: 443, Protocol: "tcp", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 直接改库里分组的目标（等价于分组编辑弹窗里填）
+	g := *store.Group(1)
+	g.ProbeTarget = "gd-cu-v4.ip.zstaticcdn.com:80"
+	if err := store.UpdateGroup(g); err != nil {
+		t.Fatal(err)
+	}
+
+	key := n.Token
+	beat := func() string {
+		body := fmt.Sprintf(`{"key":%q,"fingerprint":"fp","iface":"ens5","nic_acc":0,"relay_acc":0,"version":0,"agent":"x"}`, key)
+		r, err := http.Post(srv.URL+"/agent/beat", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		var out struct {
+			ProbeTarget string `json:"probe_target"`
+			SessionKey  string `json:"session_key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		if out.SessionKey != "" {
+			key = out.SessionKey
+		}
+		return out.ProbeTarget
+	}
+
+	if got := beat(); got != "gd-cu-v4.ip.zstaticcdn.com:80" {
+		t.Fatalf("分组目标应覆盖规则上游，实际 %q", got)
+	}
+
+	// 节点自己填的优先级最高
+	if err := store.UpdateNode(Node{
+		ID: n.ID, GroupID: 1, Name: "n1", Token: n.Token,
+		ProbeTargetCustom: "1.1.1.1:443",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := beat(); got != "1.1.1.1:443" {
+		t.Fatalf("节点自定义目标应覆盖分组目标，实际 %q", got)
+	}
+}
 func TestProbeTargetCustomWins(t *testing.T) {
 	store, srv, n := newProbeFixture(t)
 	if _, err := store.CreateRule(Rule{

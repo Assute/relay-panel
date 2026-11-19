@@ -38,6 +38,11 @@ type Group struct {
 	PeakBps    int64 `json:"peak_bps"`    // 预估峰值字节/秒，算切换余量用
 	ProbePort  int   `json:"probe_port"`  // 探活端口
 
+	// ProbeTarget 分组级的连通性探测目标（host:port），该组所有节点默认探这个。
+	// 填一个境内地址就能当「IP 是否被墙」的探针：被封的 IP 到境内通常双向不通。
+	// 节点自己填了就以节点的为准。
+	ProbeTarget string `json:"probe_target"`
+
 	DNSProvider string `json:"dns_provider"`
 	DNSZone     string `json:"dns_zone"`
 	DNSName     string `json:"dns_name"`
