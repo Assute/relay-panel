@@ -68,63 +68,83 @@ GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o bin/node-linux-ar
 GOOS=linux GOARCH=arm   go build -trimpath -ldflags="-s -w" -o bin/node-linux-arm   ./cmd/node
 ```
 
-## 一键安装
-
-面板装在一台能连外网的机器上，1 核 1G 够用。只要 root，不用装任何依赖。
+## 一键安装 / 管理
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Assute/relay-panel/main/install/install-panel.sh)
 ```
 
-指定端口和外网地址（推荐，省得装完再进面板改）：
+打开管理菜单：
+
+```
+  ┌────────────────────────────────────────┐
+  │          中转面板 · 管理菜单           │
+  └────────────────────────────────────────┘
+  未安装
+
+    1) 安装 / 重装
+    2) 修改账号密码
+    3) 查看状态
+    4) 查看日志
+    5) 重启面板
+    6) 卸载
+    0) 退出
+
+  请输入序号:
+```
+
+| 序号 | 做什么 |
+|---|---|
+| 1 | 识别架构、下载二进制、写配置、装 systemd、启动。重装会保留数据 |
+| 2 | 改账号、改密码，改完自动重启 |
+| 3 | 服务状态、监听地址、端口是否在听、数据大小、运行时长、最近日志 |
+| 4 | 最近 50 行日志，可选实时跟踪 |
+| 5 | 重启 |
+| 6 | 卸载，二次确认，可选是否连数据一起删 |
+
+装完打印：
+
+```
+  ╔══════════════════════════════════════════
+  ║  安装完成
+  ╠══════════════════════════════════════════
+  ║  地址   http://23.106.44.26:3070
+  ║  监听   127.0.0.1:3070（本机，外部需反代）
+  ║  账号   123456
+  ║  密码   123456
+  ╚══════════════════════════════════════════
+```
+
+### 不想用菜单
+
+带参数就会跳过菜单直接装，适合写进部署脚本：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Assute/relay-panel/main/install/install-panel.sh) \
   --port 3070 --url http://你的服务器IP:3070
 ```
 
-脚本会：识别 CPU 架构 → 下载对应二进制 → 写配置 → 设账号密码 → 装 systemd → 启动。
-
-装完终端直接打印：
-
-```
-================================================
-  中转面板已启动
-  地址   : http://23.106.44.26:3070
-  监听   : 127.0.0.1:3070（只绑本机，外部访问需 nginx 反代）
-  账号   : 123456
-  密码   : 123456
-================================================
-```
-
-**默认账号密码都是 `123456`，登录后可以在设置里改。**
-
-> 国内机器访问 `raw.githubusercontent.com` 常常超时。脚本内置 jsDelivr 备用源，会自动切换。两个源都不通的话，可以直接拉包：
->
-> ```bash
-> curl -fL -o panel https://cdn.jsdelivr.net/gh/Assute/relay-panel@main/dl/panel-linux-amd64
-> curl -fL -o install-panel.sh https://cdn.jsdelivr.net/gh/Assute/relay-panel@main/install/install-panel.sh
-> chmod +x panel install-panel.sh && bash install-panel.sh
-> ```
-
-### 常用参数
-
 | 参数 | 说明 | 默认 |
 |---|---|---|
 | `--port 3070` | 监听端口，只绑 127.0.0.1 | 3070 |
 | `--listen 0.0.0.0:3070` | 直接对外监听 | — |
-| `--url http://1.2.3.4:3070` | 一键命令里的外网地址 | 自动推测 |
+| `--url http://1.2.3.4:3070` | 一键命令里的外网地址，不填会自动探测 | 自动 |
+| `--user 123456` | 管理员账号 | 123456 |
+| `--pass 123456` | 管理员密码 | 123456 |
 | `--dir /opt/relay-panel` | 安装目录 | /opt/relay-panel |
-| `--uninstall` | 卸载服务，保留数据 | — |
+| `--uninstall` | 直接卸载，不进菜单 | — |
 
-### 装完检查
+### 网络不通时
+
+国内机器访问 `raw.githubusercontent.com` 常超时。脚本内置 jsDelivr 备用源会自动切换。两个都不通时手动拉：
 
 ```bash
-systemctl status relay-panel
-journalctl -u relay-panel -f
-curl -s http://127.0.0.1:3070/ | head -c 80
+curl -fL -o panel https://cdn.jsdelivr.net/gh/Assute/relay-panel@main/dl/panel-linux-amd64
+curl -fL -o install-panel.sh https://cdn.jsdelivr.net/gh/Assute/relay-panel@main/install/install-panel.sh
+chmod +x panel && bash install-panel.sh
 ```
 
+本地已有 `panel` 文件时脚本会直接用，不再下载。
 ## 节点接入
 
 面板里「添加节点」后会生成一条命令，复制到节点机上用 root 执行：
