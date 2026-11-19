@@ -764,7 +764,6 @@ function viewNodes(){
           <td class="sm dim">${ago(n.last_seen)}</td>
           <td class="ops">
             <button class="icon ghost" title="复制对接命令" onclick="nodeCmd(${n.id})">${I.copy}</button>
-            <button class="icon ghost" title="复制对接命令" onclick="nodeCmd(${n.id})">${I.copy}</button>
             <button class="icon ghost" title="编辑" onclick="dlgNode(${n.id})">${I.edit}</button>
             ${isCur?'':(n.ip?`<button class="icon ghost" title="切到这台" onclick="promote(${n.id})">${I.swap}</button>`:`<button class="icon ghost" disabled title="IP 未上报，无法切换">${I.swap}</button>`)}
             <button class="icon ghost" title="清零本周期" onclick="resetNode(${n.id})">${I.broom}</button>
@@ -1139,24 +1138,63 @@ function showCmd(cmd){
 }
 // 复制文本。HTTP 页面属于非安全上下文，navigator.clipboard 是 undefined，
 // 必须降级到 execCommand，否则点了毫无反应。
-async function copyText(t){
+// 同步执行，保证还在用户手势的有效期内。返回是否复制成功。
+function copyText(t){
   t = String(t || '');
+  if(!t) return false;
+
+  // HTTPS / localhost：标准 Clipboard API
   if(window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText){
-    try{ await navigator.clipboard.writeText(t); return true; }catch(e){}
+    try{ navigator.clipboard.writeText(t); return true; }catch(e){}
   }
+
+  // 降级：execCommand。元素必须"看得见"才能复制，
+  // 用 left:-9999px 或 opacity:0 会被浏览器判定不可见而直接失败。
+  let ta = null;
   try{
-    const ta = document.createElement('textarea');
+    ta = document.createElement('textarea');
     ta.value = t;
     ta.setAttribute('readonly','');
-    ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0';
+    ta.style.cssText = [
+      'position:fixed','top:0','left:0','width:12px','height:12px',
+      'padding:0','margin:0','border:0','outline:0','box-shadow:none',
+      'background:transparent','color:transparent','caret-color:transparent',
+      'font-size:12px','line-height:1','z-index:2147483647','resize:none'
+    ].join(';');
+
+    const sel = document.getSelection();
+    const savedRange = (sel && sel.rangeCount) ? sel.getRangeAt(0) : null;
+
     document.body.appendChild(ta);
-    ta.focus();
+    ta.focus({preventScroll:true});
     ta.select();
     ta.setSelectionRange(0, t.length);
+
     let ok = false;
     try{ ok = document.execCommand('copy'); }catch(e){ ok = false; }
+
     document.body.removeChild(ta);
+    if(savedRange && sel){
+      try{ sel.removeAllRanges(); sel.addRange(savedRange); }catch(e){}
+    }
     return ok;
+  }catch(e){
+    if(ta && ta.parentNode) ta.parentNode.removeChild(ta);
+    return false;
+  }
+}
+
+// 自动复制失败时，把目标元素的文本选中，用户按 Ctrl+C 即可
+function selectText(id){
+  const el = document.getElementById(id);
+  if(!el) return false;
+  try{
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
   }catch(e){ return false; }
 }
 
@@ -1172,13 +1210,19 @@ async function nodeCmd(id){
       return;
     }
     showCmd(r.cmd);
+    // 顺手复制一次，省得再点一次弹窗里的按钮
+    if(copyText(r.cmd)) toast('命令已复制到剪贴板');
   }catch(e){ alert(e.message); }
 }
 
-async function copyCmd(){
-  const ok = await copyText(window.__cmd || '');
-  if(ok){ closeDlg(); toast('已复制到剪贴板'); }
-  else { toast('自动复制失败，请手动选中命令复制'); }
+function copyCmd(){
+  if(copyText(window.__cmd || '')){
+    closeDlg(); toast('已复制到剪贴板');
+  }else if(selectText('cmdtext')){
+    toast('浏览器拦了自动复制，命令已选中，按 Ctrl+C');
+  }else{
+    toast('请手动选中命令后复制');
+  }
 }
 
 /* ---------- 线路 ---------- */
@@ -1281,7 +1325,7 @@ async function dlgExport(){
     window.__exp = text;
     modal('导出线路', `
       <p class="hint" style="margin-top:0">共 ${n} 条，和 Nyanpass 格式一致，可以直接贴过去。</p>
-      <pre style="max-height:380px;overflow:auto;font-size:11.5px">${esc(text || '（没有线路）')}</pre>
+      <pre id="exptext" style="max-height:380px;overflow:auto;font-size:11.5px;user-select:text">${esc(text || '（没有线路）')}</pre>
     `, `
       <button onclick="closeDlg()">关闭</button>
       <button onclick="downloadExport()">${I.download} 下载 .jsonl</button>
@@ -1290,10 +1334,14 @@ async function dlgExport(){
   }catch(e){ alert(e.message); }
 }
 
-async function copyExport(){
-  const ok = await copyText(window.__exp || '');
-  if(ok){ closeDlg(); toast('已复制'); }
-  else { toast('自动复制失败，请手动选中复制'); }
+function copyExport(){
+  if(copyText(window.__exp || '')){
+    closeDlg(); toast('已复制');
+  }else if(selectText('exptext')){
+    toast('浏览器拦了自动复制，已选中，按 Ctrl+C');
+  }else{
+    toast('请手动选中后复制');
+  }
 }
 
 function downloadExport(){
