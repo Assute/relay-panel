@@ -294,7 +294,13 @@ func (a *API) listNodes(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0, len(ns))
 	for _, n := range ns {
 		online := n.LastSeen > 0 && time.Now().Unix()-n.LastSeen < 90
-		out = append(out, map[string]any{"node": n, "online": online})
+		out = append(out, map[string]any{
+			"node":   n,
+			"online": online,
+			// 从没上报过的节点，显示「0 GB」会让人以为统计正常只是没流量，
+			// 实际是根本没数据。前端拿这个标志区分。
+			"never_reported": n.LastSeen == 0,
+		})
 	}
 	writeJSON(w, 200, out)
 }
@@ -455,9 +461,19 @@ func (a *API) patchNode(w http.ResponseWriter, r *http.Request) {
 	if in.Status != "" {
 		n.Status = in.Status
 	}
+	// 换网卡 = 换了一把完全无关的计数器；改计费口径 = 节点端的累计从 0 重新算。
+	// 这两种情况都必须把面板这侧的账一起归零，否则面板上的数字和服务器上的
+	// /proc/net/dev 永远差一个定值，看着就像「算错了」。
+	recal := (in.Iface != "" && in.Iface != old.Iface) ||
+		(in.BillMode != "" && in.BillMode != old.BillMode)
 	if err := a.store.UpdateNode(n); err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
+	}
+	if recal {
+		a.store.ResetNodeAccounting(n.ID)
+		log.Printf("node %d (%s): 网卡 %q->%q 口径 %q->%q，本周期统计从 0 重算",
+			n.ID, n.Name, old.Iface, n.Iface, old.BillMode, n.BillMode)
 	}
 	// 改的正好是当前节点、而且 IP 变了：DNS 必须立刻跟上，否则域名还指着旧地址
 	if old.IP != n.IP {
@@ -865,6 +881,8 @@ type beatReq struct {
 	NicAcc      int64  `json:"nic_acc"`
 	RelayAcc    int64  `json:"relay_acc"`
 	Version     int64  `json:"version"`
+	// Agent 节点端构建标识，面板上直接显示，省得每次都登机器看日志
+	Agent string `json:"agent"`
 }
 
 type agentRule struct {
@@ -920,7 +938,11 @@ func (a *API) agentBeat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, beatResp{OK: false, Err: err.Error()})
 		return
 	}
-	ver := a.store.AcceptBeat(nodeID, in.NicAcc, in.RelayAcc, in.Version)
+	before := a.store.Node(nodeID)
+	ver := a.store.AcceptBeat(nodeID, in.NicAcc, in.RelayAcc, in.Version, in.Agent)
+	if before != nil && in.Agent != "" && before.AgentStamp != in.Agent {
+		log.Printf("node %d (%s): 节点端 %q -> %q", nodeID, before.Name, before.AgentStamp, in.Agent)
+	}
 
 	resp := beatResp{OK: true}
 	if fresh {

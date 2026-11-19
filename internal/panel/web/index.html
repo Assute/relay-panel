@@ -332,10 +332,21 @@ document.documentElement.dataset.theme = S.theme;
    工具
    ===================================================================== */
 function gb(v){
-  if(!v) return '0';
+  if(v===null||v===undefined||!v) return '0 B';
   const u=['B','KB','MB','GB','TB','PB']; let i=0,n=Number(v);
   while(n>=1024&&i<u.length-1){n/=1024;i++;}
   return (i>=3?n.toFixed(2):n.toFixed(0))+' '+u[i];
+}
+// 节点的用量单元格：没上报过就是没数据，不能显示成「0 B」让人以为在正常统计
+function usageCell(x){
+  const n = x.node;
+  if(x.never_reported){
+    return `<span class="dim">— 未上报</span>
+      <div class="sm dim">等节点第一次心跳</div>`;
+  }
+  return `${gb(n.used_bytes)} / ${gb(n.quota_bytes)}
+    <div class="sm dim">${pct(n.used_bytes,n.quota_bytes).toFixed(1)}%</div>${bar(n.used_bytes,n.quota_bytes)}
+    <div class="sm dim mono" title="节点上报的网卡累计值（${esc(n.iface||'—')}），直接跟服务器 /proc/net/dev 对账">网卡 ${gb(n.nic_reported)}</div>`;
 }
 function pct(a,b){ return b>0 ? Math.min(100, a/b*100) : 0; }
 function bar(a,b){
@@ -576,8 +587,7 @@ function viewHome(){
           <td>${esc(n.name)}${isCur?' <span class="tag t-info">当前</span>':''}${n.is_backup?' <span class="tag t-warn">备用</span>':''}
             <div class="dim sm mono">${n.ip?esc(n.ip):'<span style="color:var(--warn)">IP 待上报</span>'}</div></td>
           <td>${statusTag(n.status)}</td>
-          <td>${gb(n.used_bytes)} / ${gb(n.quota_bytes)}
-            <div class="sm dim">${pct(n.used_bytes,n.quota_bytes).toFixed(1)}%</div>${bar(n.used_bytes,n.quota_bytes)}</td>
+          <td>${usageCell(x)}</td>
           <td class="sm dim">${ago(n.last_seen)}</td>
         </tr>`;
       }).join(''):`<tr><td colspan="5" class="dim" style="text-align:center;padding:28px">还没有节点</td></tr>`}
@@ -749,19 +759,19 @@ function viewNodes(){
       </tr></thead><tbody>
       ${S.nodes.length?S.nodes.map(x=>{
         const n=x.node, isCur=S.cur.current_node===n.id;
+        const stale = n.last_seen>0 && (Date.now()/1000-n.last_seen>120);
         return `<tr>
           <td><input type="checkbox" data-sel="node" data-id="${n.id}" onchange="selOne(this)"></td>
           <td class="dim mono">${n.sort_order}</td>
           <td>${esc(n.name)}${isCur?' <span class="tag t-info">当前</span>':''}${n.is_backup?' <span class="tag t-warn">备用</span>':''}
-            <div class="dim sm mono">${n.ip?esc(n.ip):'<span style="color:var(--warn)">IP 待上报</span>'} · ${esc(n.iface)} · ${esc(n.bill_mode)}</div></td>
+            <div class="dim sm mono">${n.ip?esc(n.ip):'<span style="color:var(--warn)">IP 待上报</span>'} · ${esc(n.iface||'—')} · ${esc(n.bill_mode||'—')}</div>
+            <div class="dim sm mono" style="opacity:.75">节点端 ${esc(n.agent_stamp||'未知（旧版二进制）')}</div></td>
           <td>${statusTag(n.status)}
             <div class="sm" style="margin-top:3px">
               <span class="dim">${x.online?'在线':'离线'}</span></div></td>
-          <td>${gb(n.used_bytes)} / ${gb(n.quota_bytes)}
-            <div class="sm dim">${pct(n.used_bytes,n.quota_bytes).toFixed(1)}%</div>
-            ${bar(n.used_bytes,n.quota_bytes)}</td>
+          <td>${usageCell(x)}</td>
           <td class="sm">${rttText(n.rtt)}</td>
-          <td class="sm dim">${ago(n.last_seen)}</td>
+          <td class="sm dim"${stale?' style="color:var(--err)" title="超过 2 分钟没有心跳，用量停止更新"':''}>${ago(n.last_seen)}</td>
           <td class="ops">
             <button class="icon ghost" title="复制对接命令" onclick="nodeCmd(${n.id})">${I.copy}</button>
             <button class="icon ghost" title="编辑" onclick="dlgNode(${n.id})">${I.edit}</button>

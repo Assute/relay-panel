@@ -30,6 +30,7 @@ type beatReq struct {
 	NicAcc      int64  `json:"nic_acc"`
 	RelayAcc    int64  `json:"relay_acc"`
 	Version     int64  `json:"version"`
+	Agent       string `json:"agent"` // 构建标识，面板上直接显示
 }
 
 type beatResp struct {
@@ -111,6 +112,7 @@ func (a *Agent) beat() error {
 		NicAcc:      int64(a.meter.Sample()),
 		RelayAcc:    a.fwd.BytesRead(),
 		Version:     a.ver.Load(),
+		Agent:       BuildStamp,
 	}
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequest("POST", a.cnf.Panel+"/agent/beat", bytes.NewReader(body))

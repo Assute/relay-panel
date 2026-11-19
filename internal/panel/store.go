@@ -62,10 +62,20 @@ type Node struct {
 	Forward bool   `json:"forward"` // 本机是否跑转发器
 
 	QuotaBytes    int64 `json:"quota_bytes"`
-	UsedBytes     int64 `json:"used_bytes"`      // 本周期已用
+	UsedBytes     int64 `json:"used_bytes"`      // 本周期已用 = NicReported - CycleStartNic
 	CycleStartNic int64 `json:"cycle_start_nic"` // 周期起点的网卡累计值
 	NicReported   int64 `json:"nic_reported"`    // Agent 上报的网卡累计（单调）
 	RelayReported int64 `json:"relay_reported"`  // Agent 上报的转发累计（单调）
+
+	// AccountMigrated 该节点是否已切到「绝对量账本」（见 AcceptBeat）。
+	// 旧版本用增量累加，升级后第一次心跳靠它决定要不要反推周期起点。
+	AccountMigrated bool `json:"account_migrated"`
+	// NeedAlign 下一次心跳只对齐起点、不计用量。
+	// 换网卡或改计费口径后节点端换了计数器，新计数器的当前值不能算成本周期用量。
+	NeedAlign bool `json:"need_align"`
+	// AgentStamp 节点端二进制标识，面板上直接能看到节点跑的是哪个构建，
+	// 不用登机器看 journalctl。
+	AgentStamp string `json:"agent_stamp"`
 
 	SortOrder int    `json:"sort_order"`
 	Status    string `json:"status"`
@@ -436,6 +446,12 @@ func (s *Store) UpdateNode(n Node) error {
 			n.NicReported = s.db.Nodes[i].NicReported
 			n.RelayReported = s.db.Nodes[i].RelayReported
 			n.CycleStartNic = s.db.Nodes[i].CycleStartNic
+			// 账本字段只由 AcceptBeat/ResetNodeAccounting 写。
+			// 编辑节点时拿到的是一份旧副本，不挡回去会把心跳刚写进去的
+			// 用量和构建标识覆盖成上一秒的值。
+			n.UsedBytes = s.db.Nodes[i].UsedBytes
+			n.AccountMigrated = s.db.Nodes[i].AccountMigrated
+			n.AgentStamp = s.db.Nodes[i].AgentStamp
 			s.db.Nodes[i] = n
 			return s.save()
 		}
@@ -596,8 +612,16 @@ func (s *Store) ResetNodeKey(id int64) *Node {
 	return nil
 }
 
-// AcceptBeat 处理一次心跳上报，返回需要下发的配置版本
-func (s *Store) AcceptBeat(nodeID, nicAcc, relayAcc, ver int64) (wantVersion int64) {
+// AcceptBeat 处理一次心跳上报，返回需要下发的配置版本。
+//
+// 用量只有一个算法：本周期已用 = 节点上报的网卡累计 - 周期起点。
+//
+// 旧版本是「面板自己攒增量」(used += nicAcc - lastNic)，看着等价，实际上
+// 只要节点侧的计数器重置过一次（改计费口径、换网卡、重装、/var/lib/relay/nic.state
+// 丢了），两边的基准就永久错位：要么用量一直不动，要么一次把网卡开机以来的
+// 全部流量算进来。改成减法后，节点那个单调累加值是唯一真相，面板只负责
+// 记起点，天然不会两本账打架。
+func (s *Store) AcceptBeat(nodeID, nicAcc, relayAcc, ver int64, agentStamp string) (wantVersion int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.db.Nodes {
@@ -605,14 +629,46 @@ func (s *Store) AcceptBeat(nodeID, nicAcc, relayAcc, ver int64) (wantVersion int
 		if n.ID != nodeID {
 			continue
 		}
-		delta := nicAcc - n.NicReported
-		if delta < 0 {
-			delta = 0 // Agent 重装 / 换机，不倒扣
+
+		// 账本初始化。
+		// 旧版本用增量累加、库里已经有数的节点：用「已上报 - 已用」反推周期起点，
+		// 保证升级这一刻面板上的数字不跳。
+		// 全新节点（还没上报过，两个值都是 0）：第一次心跳只对齐起点。
+		if !n.AccountMigrated {
+			if n.NicReported > 0 || n.UsedBytes > 0 {
+				start := n.NicReported - n.UsedBytes
+				if start < 0 {
+					start = 0
+				}
+				n.CycleStartNic = start
+			} else {
+				n.NeedAlign = true
+			}
+			n.AccountMigrated = true
 		}
+
+		// 首跳、或刚换网卡/改口径：把当前位置当周期起点。
+		// 不能从 0 起算，否则网卡（或新计数器）开机以来跑了多少就一次性算多少。
+		if n.NeedAlign {
+			n.CycleStartNic = nicAcc
+			n.NeedAlign = false
+		}
+
+		// 节点计数器归零（重装 / 删了 state 文件 / 换了计数器）：
+		// 起点跟着归零，从 0 重新开始记，不倒扣也不跳涨。
+		if nicAcc < n.CycleStartNic {
+			n.CycleStartNic = 0
+		}
+
 		n.NicReported = nicAcc
 		n.RelayReported = relayAcc
-		if delta > 0 {
-			n.UsedBytes += delta
+		if used := nicAcc - n.CycleStartNic; used > 0 {
+			n.UsedBytes = used
+		} else {
+			n.UsedBytes = 0
+		}
+		if agentStamp != "" {
+			n.AgentStamp = agentStamp
 		}
 		n.LastSeen = time.Now().Unix()
 		// 心跳到达说明在线，pending/dead 都拉回 standby
@@ -624,6 +680,25 @@ func (s *Store) AcceptBeat(nodeID, nicAcc, relayAcc, ver int64) (wantVersion int
 		return n.ConfigVersion
 	}
 	return 0
+}
+
+// ResetNodeAccounting 把节点这侧的账归零。
+// 换网卡 / 改计费口径时调：节点端的累计值也跟着从 0 重新算，
+// 面板要是留着旧值，显示的数字就再也对不上服务器了。
+func (s *Store) ResetNodeAccounting(nodeID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.db.Nodes {
+		if s.db.Nodes[i].ID == nodeID {
+			s.db.Nodes[i].CycleStartNic = 0
+			s.db.Nodes[i].NicReported = 0
+			s.db.Nodes[i].UsedBytes = 0
+			s.db.Nodes[i].NeedAlign = true
+			s.db.Nodes[i].LastCycleAt = time.Now().Unix()
+			_ = s.save()
+			return
+		}
+	}
 }
 
 // SetStatus / SetCurrentNode 等小操作
@@ -768,7 +843,7 @@ func (s *Store) AckAlert(id int64) {
 	_ = s.save()
 }
 
-// ResetNodeCycle 手动清零本周期用量
+// ResetNodeCycle 手动清零本周期用量：把周期起点对齐到当前网卡累计值。
 func (s *Store) ResetNodeCycle(nodeID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -776,6 +851,7 @@ func (s *Store) ResetNodeCycle(nodeID int64) {
 		if s.db.Nodes[i].ID == nodeID {
 			s.db.Nodes[i].CycleStartNic = s.db.Nodes[i].NicReported
 			s.db.Nodes[i].UsedBytes = 0
+			s.db.Nodes[i].AccountMigrated = true
 			s.db.Nodes[i].LastCycleAt = time.Now().Unix()
 			if s.db.Nodes[i].Status == StatusExhausted {
 				s.db.Nodes[i].Status = StatusStandby
