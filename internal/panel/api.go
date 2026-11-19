@@ -81,6 +81,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/groups/{id}/sync-dns", a.auth(http.HandlerFunc(a.syncGroupDNS)))
 	mux.Handle("GET /api/rules", a.auth(http.HandlerFunc(a.AllRules)))
 	mux.Handle("POST /api/nodes/{id}/cmd", a.auth(http.HandlerFunc(a.nodeCmd)))
+	mux.Handle("POST /api/nodes/{id}/recover", a.auth(http.HandlerFunc(a.recoverNode)))
 
 	mux.Handle("/", webHandler())
 
@@ -910,7 +911,20 @@ type beatResp struct {
 	SessionKey string       `json:"session_key,omitempty"`
 	Iface      string       `json:"iface,omitempty"`
 	BillMode   string       `json:"bill_mode,omitempty"`
+	ProbeTarget string      `json:"probe_target"`
 	Config     *agentConfig `json:"config,omitempty"`
+}
+
+// probeTargetFor 决定这个节点该探哪个上游。
+// 同一组所有节点跑同一套规则，取第一条启用的线路目标即可代表
+// 「这台机器还能不能连上上游」。没有可用规则就不探。
+func (a *API) probeTargetFor(n *Node) string {
+	for _, rl := range a.store.Rules(n.GroupID) {
+		if rl.Enabled && rl.TargetHost != "" && rl.TargetPort > 0 {
+			return net.JoinHostPort(rl.TargetHost, strconv.Itoa(rl.TargetPort))
+		}
+	}
+	return ""
 }
 
 // statsReq 实时指标快通道：只有展示用的数字，不带配置也不动账本。
@@ -924,10 +938,20 @@ type statsReq struct {
 	CPUPct      int    `json:"cpu_pct"`
 	MemPct      int    `json:"mem_pct"`
 	DiskPct     int    `json:"disk_pct"`
+
+	// 上游连通性自检：节点自己拨 TCP 的结果
+	ProbeTarget string `json:"probe_target"`
+	ProbeOK     bool   `json:"probe_ok"`
+	ProbeDone   bool   `json:"probe_done"`
+	ProbeFails  int    `json:"probe_fails"`
+	ProbeAt     int64  `json:"probe_at"`
+	ProbeRTT    int64  `json:"probe_rtt_ms"`
+	ProbeErr    string `json:"probe_err"`
 }
 
 // agentStats 每两秒收一次节点的实时速率和负载。
 // 只写内存，不落盘、不返回配置——这条路径唯一的作用是让面板上的数字动起来。
+// 另外它也是连通性自检的入口：节点连报三次上游不通，这里立刻把它封掉。
 func (a *API) agentStats(w http.ResponseWriter, r *http.Request) {
 	var in statsReq
 	if err := readJSON(r, &in); err != nil {
@@ -939,8 +963,41 @@ func (a *API) agentStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, map[string]string{"error": "token_invalid"})
 		return
 	}
-	a.store.UpdateMetrics(nodeID, in.RxBps, in.TxBps, in.CPUPct, in.MemPct, in.DiskPct, in.Iface)
+	becameBad := a.store.UpdateMetrics(nodeID, Metrics{
+		RxBps: in.RxBps, TxBps: in.TxBps,
+		CPUPct: in.CPUPct, MemPct: in.MemPct, DiskPct: in.DiskPct,
+		Iface:       in.Iface,
+		ProbeTarget: in.ProbeTarget,
+		ProbeOK:     in.ProbeOK,
+		ProbeDone:   in.ProbeDone,
+		ProbeFails:  in.ProbeFails,
+		ProbeAt:     in.ProbeAt,
+		ProbeRTT:    in.ProbeRTT,
+		ProbeErr:    in.ProbeErr,
+	})
+	if becameBad {
+		if n := a.store.Node(nodeID); n != nil {
+			log.Printf("node %d (%s): 上游连续 %d 次不通（%s），标记为待恢复",
+				n.ID, n.Name, in.ProbeFails, in.ProbeTarget)
+			a.store.Alert(n.GroupID, n.ID, "error",
+				fmt.Sprintf("节点 %s 连不上上游 %s（连续 %d 次），已切走，需人工恢复",
+					n.Name, in.ProbeTarget, in.ProbeFails))
+		}
+		a.kick() // 立刻巡检，不用等下一个 30 秒
+	}
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// recoverNode 人工恢复被连通性自检封掉的节点。
+func (a *API) recoverNode(w http.ResponseWriter, r *http.Request) {
+	n := a.store.RecoverNode(pathID(r, "id"))
+	if n == nil {
+		writeJSON(w, 404, map[string]string{"error": "节点不存在"})
+		return
+	}
+	log.Printf("node %d (%s): 人工恢复，重新参与调度", n.ID, n.Name)
+	a.kick()
+	writeJSON(w, 200, n)
 }
 
 // clientIP 从请求里取对端真实公网 IP，处理反代和 Cloudflare
@@ -1012,6 +1069,7 @@ func (a *API) agentBeat(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Iface = n.Iface
 	resp.BillMode = n.BillMode
+	resp.ProbeTarget = a.probeTargetFor(n)
 
 	// 版本对不上才下发配置（心跳 15s 一次，配置一般不变）
 	// 所有节点拿到的规则完全一致，切节点只改 DNS，不重发配置

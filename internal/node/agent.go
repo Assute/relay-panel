@@ -20,8 +20,11 @@ import (
 )
 
 type agentConfig struct {
-	Version int64  `json:"version"`
-	Rules   []Rule `json:"rules"`
+	Version int64       `json:"version"`
+	Rules   []Rule      `json:"rules"`
+	// ProbeTarget 上游连通性探测目标（host:port），面板按规则算好下发。
+	// 空字符串表示不探（还没配规则）。
+	ProbeTarget string `json:"probe_target,omitempty"`
 }
 
 type beatReq struct {
@@ -40,12 +43,15 @@ type beatReq struct {
 }
 
 type beatResp struct {
-	OK         bool         `json:"ok"`
-	Err        string       `json:"err,omitempty"`
-	SessionKey string       `json:"session_key,omitempty"`
-	Iface      string       `json:"iface,omitempty"`
-	BillMode   string       `json:"bill_mode,omitempty"`
-	Config     *agentConfig `json:"config,omitempty"`
+	OK         bool   `json:"ok"`
+	Err        string `json:"err,omitempty"`
+	SessionKey string `json:"session_key,omitempty"`
+	Iface      string `json:"iface,omitempty"`
+	BillMode   string `json:"bill_mode,omitempty"`
+	// ProbeTarget 每次都带（不像规则那样只在版本变化时下发）：
+	// 探测目标跟着规则走，改一条规则就该立刻换目标重测。
+	ProbeTarget string       `json:"probe_target"`
+	Config      *agentConfig `json:"config,omitempty"`
 }
 
 // statsReq 实时指标快通道：只有展示用的数字，不动账本也不要配置。
@@ -58,12 +64,22 @@ type statsReq struct {
 	CPUPct      int    `json:"cpu_pct"`
 	MemPct      int    `json:"mem_pct"`
 	DiskPct     int    `json:"disk_pct"`
+
+	// 上游连通性探测结果，面板据此判断这个节点还能不能干活
+	ProbeTarget string `json:"probe_target"`
+	ProbeOK     bool   `json:"probe_ok"`
+	ProbeDone   bool   `json:"probe_done"`
+	ProbeFails  int    `json:"probe_fails"`
+	ProbeAt     int64  `json:"probe_at"`
+	ProbeRTT    int64  `json:"probe_rtt_ms"`
+	ProbeErr    string `json:"probe_err"`
 }
 
 type Agent struct {
 	cnf   *Config
 	meter *NicMeter
 	fwd   *Forwarder
+	probe *Prober
 	keyMu sync.RWMutex
 	key   string
 	ver   atomic.Int64
@@ -89,6 +105,7 @@ func NewAgent(c *Config, m *NicMeter, f *Forwarder) *Agent {
 		cnf:   c,
 		meter: m,
 		fwd:   f,
+		probe: NewProber(),
 		key:   c.LoadKey(),
 		hc:    &http.Client{Timeout: 20 * time.Second},
 		fp:    Fingerprint(),
@@ -96,6 +113,9 @@ func NewAgent(c *Config, m *NicMeter, f *Forwarder) *Agent {
 }
 
 func (a *Agent) Run() {
+	// 上游连通性探针：默认一分钟一轮，连续三次不通才报给面板
+	go a.probe.Run()
+
 	// 速率按 1 秒采样，面板上的数字才有「实时」的感觉。
 	// 顺带把账本采样频率提上来，计数器中途归零丢的量也更少。
 	go func() {
@@ -227,6 +247,17 @@ func (a *Agent) beat() error {
 		}
 	}
 
+	// 上游探测目标：面板按规则算好，每次心跳都带。
+	// 目标变了立刻重测一轮，不用等下一个一分钟。
+	if br.ProbeTarget != a.probe.Target() {
+		if br.ProbeTarget == "" {
+			log.Printf("连通性探测: 面板未下发目标，暂停探测")
+		} else {
+			log.Printf("连通性探测目标: %s", br.ProbeTarget)
+		}
+		a.probe.SetTarget(br.ProbeTarget)
+	}
+
 	// 配置有更新
 	if br.Config != nil && br.Config.Version > a.ver.Load() {
 		if err := a.fwd.Sync(br.Config.Rules); err != nil {
@@ -246,6 +277,7 @@ func (a *Agent) beat() error {
 // key 失效时下一轮心跳会重新注册或退出，这里不用管。
 func (a *Agent) pushStats() {
 	rx, tx := a.meter.Rates()
+	pOK, pDone, pFails, pAt, pRTT, pTarget, pErr := a.probe.Status()
 	body, _ := json.Marshal(statsReq{
 		Key:         a.currentKey(),
 		Fingerprint: a.fp,
@@ -255,6 +287,13 @@ func (a *Agent) pushStats() {
 		CPUPct:      a.sys.CPU(),
 		MemPct:      MemPct(),
 		DiskPct:     DiskPct(),
+		ProbeTarget: pTarget,
+		ProbeOK:     pOK,
+		ProbeDone:   pDone,
+		ProbeFails:  pFails,
+		ProbeAt:     pAt,
+		ProbeRTT:    pRTT,
+		ProbeErr:    pErr,
 	})
 	resp, err := a.hc.Post(a.cnf.Panel+"/agent/stats", "application/json", bytes.NewReader(body))
 	if err != nil {

@@ -22,6 +22,11 @@ const (
 	StatusExhausted = "exhausted" // 本周期配额用完
 	StatusDead      = "dead"      // 探活失败
 	StatusDisabled  = "disabled"  // 人工停用
+	// StatusUnreachable 节点自检发现上游不通，已被切走。
+	// 和 dead 的区别：dead 是「面板连不上它」，认由心跳/探活恢复；
+	// unreachable 是「它自己连不上上游」，必须人工点「恢复」才重新参与调度，
+	// 否则它每分钟都会再报一次不通，切来切去没完。
+	StatusUnreachable = "unreachable"
 )
 
 type Group struct {
@@ -86,6 +91,17 @@ type Node struct {
 	DiskPct int   `json:"disk_pct"`
 	// FirstSeen 第一次心跳的时间，面板上的「在线 X 天」按它算
 	FirstSeen int64 `json:"first_seen"`
+
+	// 上游连通性：节点自己拨 TCP 得到的结果，面板据此判断它还能不能干活。
+	ProbeTarget string `json:"probe_target"` // host:port，空表示没配置
+	ProbeOK     bool   `json:"probe_ok"`
+	ProbeDone   bool   `json:"probe_done"` // 节点是否已经出过结果
+	ProbeFails  int    `json:"probe_fails"` // 连续失败次数，成功即归零
+	ProbeAt     int64  `json:"probe_at"`
+	ProbeRTT    int64  `json:"probe_rtt_ms"`
+	ProbeErr    string `json:"probe_err"`
+	// Unreachable 已被判定上游不通并切走，等人工恢复。
+	Unreachable bool `json:"unreachable"`
 
 	SortOrder int    `json:"sort_order"`
 	Status    string `json:"status"`
@@ -469,6 +485,14 @@ func (s *Store) UpdateNode(n Node) error {
 			n.MemPct = s.db.Nodes[i].MemPct
 			n.DiskPct = s.db.Nodes[i].DiskPct
 			n.FirstSeen = s.db.Nodes[i].FirstSeen
+			n.ProbeTarget = s.db.Nodes[i].ProbeTarget
+			n.ProbeOK = s.db.Nodes[i].ProbeOK
+			n.ProbeDone = s.db.Nodes[i].ProbeDone
+			n.ProbeFails = s.db.Nodes[i].ProbeFails
+			n.ProbeAt = s.db.Nodes[i].ProbeAt
+			n.ProbeRTT = s.db.Nodes[i].ProbeRTT
+			n.ProbeErr = s.db.Nodes[i].ProbeErr
+			n.Unreachable = s.db.Nodes[i].Unreachable
 			s.db.Nodes[i] = n
 			return s.save()
 		}
@@ -597,10 +621,34 @@ func (s *Store) AuthStats(key, fp string) (int64, bool) {
 	return 0, false
 }
 
+// probeFailLimit 连续三次不通才认定节点不能干活。
+// 跟节点端 probeMaxFails 对应：一次抖动不算故障。
+const probeFailLimit = 3
+
+// Metrics 一次 /agent/stats 带回来的观测值。
+type Metrics struct {
+	RxBps   int64
+	TxBps   int64
+	CPUPct  int
+	MemPct  int
+	DiskPct int
+	Iface   string
+
+	ProbeTarget string
+	ProbeOK     bool
+	ProbeDone   bool
+	ProbeFails  int
+	ProbeAt     int64
+	ProbeRTT    int64
+	ProbeErr    string
+}
+
 // UpdateMetrics 只更新展示用的实时字段，不落盘。
 // 两秒一次的高频上报如果每次都写 JSON，磁盘会被无意义地刷。
 // 下一次心跳（15 秒）会把内存里的值顺带写进 data.json。
-func (s *Store) UpdateMetrics(nodeID, rxBps, txBps int64, cpu, mem, disk int, iface string) {
+//
+// 返回 true 表示这一轮把节点判成了「上游不通」，调用方要立刻让调度器巡检。
+func (s *Store) UpdateMetrics(nodeID int64, m Metrics) (becameUnreachable bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.db.Nodes {
@@ -608,11 +656,26 @@ func (s *Store) UpdateMetrics(nodeID, rxBps, txBps int64, cpu, mem, disk int, if
 			continue
 		}
 		n := &s.db.Nodes[i]
-		n.RxBps, n.TxBps = rxBps, txBps
-		n.CPUPct, n.MemPct, n.DiskPct = cpu, mem, disk
-		if iface != "" {
-			n.Iface = iface
+		n.RxBps, n.TxBps = m.RxBps, m.TxBps
+		n.CPUPct, n.MemPct, n.DiskPct = m.CPUPct, m.MemPct, m.DiskPct
+		if m.Iface != "" {
+			n.Iface = m.Iface
 		}
+
+		n.ProbeTarget = m.ProbeTarget
+		n.ProbeOK, n.ProbeDone = m.ProbeOK, m.ProbeDone
+		n.ProbeFails = m.ProbeFails
+		n.ProbeAt, n.ProbeRTT, n.ProbeErr = m.ProbeAt, m.ProbeRTT, m.ProbeErr
+
+		// 连续三次不通：这个节点接不了流量了，标成待恢复等人工处理。
+		// 只标一次——之后它每分钟都会继续报不通，不重复告警也不反复切。
+		// 注意：探通了也不自动解封，这是有意的，避免在临界状态来回切。
+		if m.ProbeFails >= probeFailLimit && !n.Unreachable {
+			n.Unreachable = true
+			n.Status = StatusUnreachable
+			becameUnreachable = true
+		}
+
 		now := time.Now().Unix()
 		if n.FirstSeen == 0 {
 			n.FirstSeen = now
@@ -620,6 +683,30 @@ func (s *Store) UpdateMetrics(nodeID, rxBps, txBps int64, cpu, mem, disk int, if
 		n.LastSeen = now // 掉线判断也跟着这个走，不用等下一次心跳
 		return
 	}
+	return false
+}
+
+// RecoverNode 人工恢复：解除「上游不通」的封禁，重新参与调度。
+// 不自动切回当前节点——恢复只是让它重新变成可用候选。
+func (s *Store) RecoverNode(nodeID int64) *Node {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.db.Nodes {
+		n := &s.db.Nodes[i]
+		if n.ID != nodeID {
+			continue
+		}
+		n.Unreachable = false
+		n.ProbeFails = 0
+		n.ProbeErr = ""
+		if n.Status == StatusUnreachable {
+			n.Status = StatusStandby
+		}
+		_ = s.save()
+		out := *n
+		return &out
+	}
+	return nil
 }
 
 // AuthAgent 用 token 或 session_key 认证，token 首次使用时换发 session_key

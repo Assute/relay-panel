@@ -112,8 +112,11 @@ func usable(n Node) bool {
 	if n.IP == "" {
 		return false // 还没上报过 IP，不知道域名该指向哪
 	}
+	if n.Unreachable {
+		return false // 上游不通，等人工恢复
+	}
 	switch n.Status {
-	case StatusDisabled, StatusExhausted, StatusDraining:
+	case StatusDisabled, StatusExhausted, StatusDraining, StatusUnreachable:
 		return false
 	}
 	return true
@@ -174,7 +177,16 @@ func (s *Scheduler) tickGroup(g *Group) {
 
 	cur := s.store.CurrentNode(g.ID)
 
-	// 1) 当前节点失联：不等用量，立刻切
+	// 1) 当前节点自检报「上游不通」：最先处理。
+	// 这种情况机器还活着、心跳照发、网卡还在涨，只有节点自己拨号才知道，
+	// 所以不能等 isDead——那永远不会成立。
+	if cur != nil && cur.Unreachable {
+		log.Printf("group %d: 节点 %d (%s) 上游不通，切走", g.ID, cur.ID, cur.Name)
+		s.switchTo(g, cur, nodes, "unreachable")
+		return
+	}
+
+	// 2) 当前节点失联：不等用量，立刻切
 	if cur != nil && s.isDead(cur, g) {
 		log.Printf("group %d: 节点 %d (%s) 心跳超时，立即切换", g.ID, cur.ID, cur.IP)
 		s.store.SetStatus(cur.ID, StatusDead)
@@ -245,14 +257,18 @@ func (s *Scheduler) switchTo(g *Group, from *Node, nodes []Node, reason string) 
 		var fromID int64
 		if from != nil {
 			fromID = from.ID
-			s.store.SetStatus(from.ID, StatusDraining)
-			old := from.ID
-			// 旧节点 30 分钟后标记收尾完成：给存量长连接时间自然结束
-			time.AfterFunc(30*time.Minute, func() {
-				if n := s.store.Node(old); n != nil && n.Status == StatusDraining {
-					s.store.SetStatus(old, StatusExhausted)
-				}
-			})
+			// 上游不通的节点保持 unreachable：draining 会在 30 分钟后变 exhausted，
+			// 那样人工恢复之后它还回不来。
+			if !from.Unreachable {
+				s.store.SetStatus(from.ID, StatusDraining)
+				old := from.ID
+				// 旧节点 30 分钟后标记收尾完成：给存量长连接时间自然结束
+				time.AfterFunc(30*time.Minute, func() {
+					if n := s.store.Node(old); n != nil && n.Status == StatusDraining {
+						s.store.SetStatus(old, StatusExhausted)
+					}
+				})
+			}
 		}
 		s.store.SetCurrentNode(g.ID, cand.ID)
 		s.store.Audit(g.ID, fromID, cand.ID, reason)
@@ -269,6 +285,8 @@ func (s *Scheduler) switchTo(g *Group, from *Node, nodes []Node, reason string) 
 			s.store.Alert(g.ID, cand.ID, "info", "配额到线，已切到 "+cand.Name)
 		case "dead":
 			s.store.Alert(g.ID, cand.ID, "warn", "上一台失联，已切到 "+cand.Name+tag)
+		case "unreachable":
+			s.store.Alert(g.ID, cand.ID, "warn", "上一台连不上上游，已切到 "+cand.Name+tag+"（原节点需人工恢复）")
 		}
 		return
 	}
