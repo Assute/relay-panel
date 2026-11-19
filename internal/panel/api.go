@@ -344,7 +344,12 @@ func (a *API) createNode(w http.ResponseWriter, r *http.Request) {
 func (a *API) buildInstallCmd(token string) string {
 	base := strings.TrimRight(a.cnf.PublicURL, "/")
 	if base == "" {
-		base = "http://127.0.0.1:8080"
+		// 没配 PublicURL 时兜底，端口跟随监听配置
+		port := "3070"
+		if i := strings.LastIndex(a.cnf.Listen, ":"); i >= 0 && i < len(a.cnf.Listen)-1 {
+			port = a.cnf.Listen[i+1:]
+		}
+		base = "http://127.0.0.1:" + port
 	}
 	return "curl -fsSL " + base + "/i.sh | bash -s -- --panel=" + base + " --token=" + token
 }
