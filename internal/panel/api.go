@@ -730,7 +730,7 @@ func (a *API) testGroupDNS(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "DNS 未配置"})
 		return
 	}
-	zoneID, err := cf.resolveZone(g.DNSZone)
+	zoneID, err := cf.zoneFor(g)
 	if err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
@@ -741,7 +741,7 @@ func (a *API) testGroupDNS(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{
 			"ok": true, "state": "missing",
 			"zone_id": zoneID,
-			"message": "Zone 正确，记录 " + g.DNSName + " 还不存在。第一次切流时面板会自动创建。",
+			"message": "Zone 已识别，记录 " + g.DNSName + " 还不存在。第一次切流时面板会自动创建。",
 		})
 		return
 	}

@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"sync"
 	"strings"
 	"time"
 )
@@ -90,6 +91,7 @@ func NewDNSProvider(name, token string) (DNSProvider, error) {
 }
 
 type Cloudflare struct {
+	zoneCache sync.Map // domain -> zoneID，避免反复查
 	token string
 	hc    *http.Client
 }
@@ -191,6 +193,49 @@ func (c *Cloudflare) resolveZone(zone string) (string, error) {
 	return zones[0].ID, nil
 }
 
+// zoneFor 拿分组对应的 zone。显式填了 DNSZone 就用它，否则从域名推导。
+func (c *Cloudflare) zoneFor(g *Group) (string, error) {
+	if z := strings.TrimSpace(g.DNSZone); z != "" {
+		return c.resolveZone(z)
+	}
+	return c.resolveZoneForDomain(g.DNSName)
+}
+
+// resolveZoneForDomain 从完整域名倒推出所属 zone。
+// 域名 relay.example.com 依次试 example.com、relay.example.com，
+// 第一个能在账号里查到的就是 zone。结果缓存，避免每次都打 API。
+func (c *Cloudflare) resolveZoneForDomain(domain string) (string, error) {
+	domain = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(domain, ".")))
+	if domain == "" {
+		return "", errors.New("未填域名")
+	}
+	if zoneIDRe.MatchString(domain) {
+		return domain, nil
+	}
+	if v, ok := c.zoneCache.Load(domain); ok {
+		return v.(string), nil
+	}
+
+	labels := strings.Split(domain, ".")
+	if len(labels) < 2 {
+		return "", fmt.Errorf("域名格式不对: %s（至少要 name.zone）", domain)
+	}
+
+	// 从短到长试：先 example.com，再 sub.example.com，最后整个域名
+	for i := len(labels) - 2; i >= 0; i-- {
+		cand := strings.Join(labels[i:], ".")
+		var zones []cfZone
+		if err := c.do("GET", "/zones?name="+cand, nil, &zones); err != nil {
+			return "", err
+		}
+		if len(zones) > 0 {
+			c.zoneCache.Store(domain, zones[0].ID)
+			return zones[0].ID, nil
+		}
+	}
+	return "", fmt.Errorf("Cloudflare 账号里找不到 %s 所属的 zone，检查 token 权限和域名拼写", domain)
+}
+
 // findRecord 只查不建。找不到返回 ErrDNSRecordMissing。
 func (c *Cloudflare) findRecord(g *Group, zoneID string) (*cfRecord, error) {
 	if g.DNSName == "" {
@@ -233,7 +278,7 @@ func (c *Cloudflare) SetA(g *Group, ip string, ttl int) error {
 	if ttl < 60 {
 		ttl = 60 // Cloudflare 免费版最小值；1 表示 Auto
 	}
-	zoneID, err := c.resolveZone(g.DNSZone)
+	zoneID, err := c.zoneFor(g)
 	if err != nil {
 		return err
 	}
@@ -255,7 +300,7 @@ func (c *Cloudflare) SetA(g *Group, ip string, ttl int) error {
 }
 
 func (c *Cloudflare) GetA(g *Group) (string, error) {
-	zoneID, err := c.resolveZone(g.DNSZone)
+	zoneID, err := c.zoneFor(g)
 	if err != nil {
 		return "", err
 	}

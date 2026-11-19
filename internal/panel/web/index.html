@@ -927,14 +927,9 @@ function dlgGroup(isNew){
     <input id="f_reset" type="number" min="1" max="28" value="${g?g.reset_day:1}">
 
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line)">
-      <label style="margin-top:0">Cloudflare Zone</label>
-      <input id="f_zone" type="text" value="${g?esc(g.dns_zone):''}" placeholder="example.com">
-      <div class="hint">填域名就行，面板自己查 Zone ID。也可以直接填 32 位 ID。</div>
-      <label>域名（完整记录名）</label>
+      <label style="margin-top:0">域名</label>
       <input id="f_dnsname" type="text" value="${g?esc(g.dns_name):''}" placeholder="relay.example.com">
-      <label>TTL（秒）</label>
-      <input id="f_ttl" type="number" value="${g?g.dns_ttl:60}">
-      <div class="hint">Cloudflare 免费版最小 60。切节点时改的就是这条 A 记录。</div>
+      <div class="hint">填完整记录名。所属 Cloudflare Zone 自动识别，记录不存在会自动创建。<br>切节点时改的就是这条 A 记录。</div>
       ${g?`<div class="row" style="margin-top:10px">
         <button onclick="testDNS(${g.id})">测试这条 DNS 配置</button>
       </div>
@@ -963,9 +958,10 @@ async function saveGroup(id){
     reset_day: parseInt($('#f_reset').value||'1',10),
     quota_gb: 0,
     dns_provider: 'cloudflare',
-    dns_zone: ($('#f_zone')?.value||'').trim(),
+    // Zone 不再单独填：留空让面板从域名自动推导
+    dns_zone: id && S.cur ? (S.cur.dns_zone||'') : '',
     dns_name: ($('#f_dnsname')?.value||'').trim(),
-    dns_ttl: parseInt($('#f_ttl')?.value||'60',10),
+    dns_ttl: 60,
   };
   if(!body.name){ alert('分组名不能为空'); return; }
   try{
