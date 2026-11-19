@@ -154,9 +154,14 @@ func (a *Agent) beat() error {
 		if after != before {
 			log.Printf("网卡切换: %s -> %s（计费口径 %s）", before, after, a.meter.Mode())
 		}
-		// 换完立刻验一次：读不到就吵出来，否则用量会一直是 0 且没人知道为什么
+		// 换完立刻验一次：读不到就自动挑一张，否则用量会一直是 0 且没人知道为什么
 		if _, _, err := NicCounters(after); err != nil {
-			log.Printf("警告: 网卡 %q 读不到，当前可用: %v —— 用量将一直是 0", after, ListIfaces())
+			if auto := PickBusiestIface(); auto != "" && auto != after {
+				log.Printf("网卡 %q 读不到，自动改测 %q（可用: %v）", after, auto, ListIfaces())
+				a.meter.SetIface(auto, "")
+			} else {
+				log.Printf("警告: 网卡 %q 读不到，当前可用: %v —— 用量将一直是 0", after, ListIfaces())
+			}
 		}
 	}
 

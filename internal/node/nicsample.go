@@ -73,6 +73,43 @@ type NicMeter struct {
 	state string
 }
 
+// PickBusiestIface 挑当前流量最大的非回环网卡。
+// 网卡命名各发行版不同（eth0 / ens5 / enp0s3 / venet0），
+// 面板里填错的代价是流量完全不统计，所以给个自动兜底。
+func PickBusiestIface() string {
+	f, err := os.Open("/proc/net/dev")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	var best string
+	var maxBytes uint64
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		line := sc.Text()
+		i := strings.IndexByte(line, ':')
+		if i < 0 {
+			continue
+		}
+		name := strings.TrimSpace(line[:i])
+		if name == "" || name == "lo" {
+			continue
+		}
+		flds := strings.Fields(line[i+1:])
+		if len(flds) < 9 {
+			continue
+		}
+		rx, _ := strconv.ParseUint(flds[0], 10, 64)
+		tx, _ := strconv.ParseUint(flds[8], 10, 64)
+		if sum := rx + tx; sum > maxBytes {
+			maxBytes, best = sum, name
+		}
+	}
+	return best
+}
+
 func NewNicMeter(iface, mode, stateDir string) *NicMeter {
 	if mode == "" {
 		mode = "both"

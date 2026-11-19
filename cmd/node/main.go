@@ -32,7 +32,12 @@ func main() {
 
 	// 网卡自检：配错了直接说清楚，别让人瞎猜
 	if _, _, err := node.NicCounters(meter.Iface()); err != nil {
-		log.Printf("警告: 网卡 %q 读不到，当前可用: %v", meter.Iface(), node.ListIfaces())
+		if auto := node.PickBusiestIface(); auto != "" && auto != meter.Iface() {
+			log.Printf("网卡 %q 读不到，自动改测 %q（可用: %v）", meter.Iface(), auto, node.ListIfaces())
+			meter.SetIface(auto, "")
+		} else {
+			log.Printf("警告: 网卡 %q 读不到，当前可用: %v", meter.Iface(), node.ListIfaces())
+		}
 		log.Printf("       面板下发的 iface 会覆盖本地配置，稍后自动纠正")
 	}
 
