@@ -52,7 +52,8 @@ main{flex:1;min-width:0;display:flex;flex-direction:column}
 .card>.hd{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
 .card>.hd h3{margin:0;font-size:14px;font-weight:600}
 .card>.bd{padding:16px 18px}
-.card>.bd.flush{padding:0}
+/* 列宽固定，窗口窄了就横向滚动，别把内容挤变形、也别留一大片空白 */
+.card>.bd.flush{padding:0;overflow-x:auto}
 .sp{flex:1}
 .dim{color:var(--dim)}
 .sm{font-size:12.5px}
@@ -670,7 +671,7 @@ function viewHome(){
     <div class="hd"><h3>节点顺序</h3><div class="sp"></div>
       <span class="dim sm">域名指当前这台，用满自动切下一台</span></div>
     <div class="bd flush">
-      <table><thead><tr><th style="width:64px">#</th><th>节点</th><th style="width:110px">状态</th><th style="width:130px">速率</th><th style="width:250px">用量</th><th style="width:110px">最近心跳</th></tr></thead><tbody>
+      <table style="width:auto"><thead><tr><th style="width:56px">#</th><th style="width:240px">节点</th><th style="width:110px">状态</th><th style="width:130px">速率</th><th style="width:250px">用量</th><th style="width:110px">最近心跳</th></tr></thead><tbody>
       ${exits.length?exits.map(x=>{
         const n=x.node, isCur=S.cur.current_node===n.id;
         return `<tr data-node="${n.id}">
@@ -840,15 +841,15 @@ function viewNodes(){
       <button class="primary" onclick="dlgNode()">${I.plus} 添加节点</button>
     </div>
     <div class="bd flush">
-      <table><thead><tr>
+      <table style="width:auto"><thead><tr>
         <th style="width:38px"><input type="checkbox" onchange="selAll(this,'node')"></th>
-        <th style="width:52px">顺序</th><th>节点</th>
+        <th style="width:52px">顺序</th><th style="width:300px">节点</th>
         <th style="width:96px">状态</th>
         <th style="width:90px">上行</th>
         <th style="width:90px">下行</th>
-        <th style="width:168px">负载</th>
+        <th style="width:160px">负载</th>
         <th style="width:84px">在线</th>
-        <th style="width:200px">本周期用量</th>
+        <th>本周期用量</th>
         <th style="width:150px" class="ops">操作</th>
       </tr></thead><tbody>
       ${S.nodes.length?S.nodes.map(x=>{
