@@ -148,7 +148,16 @@ func (a *Agent) beat() error {
 
 	// 面板下发的网卡配置
 	if br.Iface != "" || br.BillMode != "" {
+		before := a.meter.Iface()
 		a.meter.SetIface(br.Iface, br.BillMode)
+		after := a.meter.Iface()
+		if after != before {
+			log.Printf("网卡切换: %s -> %s（计费口径 %s）", before, after, a.meter.Mode())
+		}
+		// 换完立刻验一次：读不到就吵出来，否则用量会一直是 0 且没人知道为什么
+		if _, _, err := NicCounters(after); err != nil {
+			log.Printf("警告: 网卡 %q 读不到，当前可用: %v —— 用量将一直是 0", after, ListIfaces())
+		}
 	}
 
 	// 配置有更新

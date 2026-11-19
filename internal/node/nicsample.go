@@ -105,6 +105,13 @@ func (n *NicMeter) Iface() string {
 	return n.iface
 }
 
+// Mode 返回当前计费口径（both / tx / rx）
+func (n *NicMeter) Mode() string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.mode
+}
+
 // Sample 返回单调递增的累计字节数
 func (n *NicMeter) Sample() uint64 {
 	n.mu.Lock()
