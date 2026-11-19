@@ -131,12 +131,14 @@ func (n *NicMeter) SetIface(iface, mode string) {
 		n.iface = iface
 		n.base = 0 // 换网卡，重新对齐
 	}
-	// 改计费口径也会让 raw 突变（both -> tx 时 raw 直接砍半），
-	// 不重置基准的话，下一次 Sample 会把整个 tx 累计值当成增量加进去，
-	// 用量瞬间暴涨一个网卡的生命周期总量。
+	// 改计费口径会让 raw 突变（both -> tx 时砍掉一半），
+	// base 和 acc 都归零重新起算，否则下一次 Sample 会把整个
+	// tx 累计值当成增量加进去，用量瞬间多算几十 GB。
+	// 面板侧的 UsedBytes 是独立累加的，不受影响。
 	if mode != "" && mode != n.mode {
 		n.mode = mode
 		n.base = 0
+		n.acc = 0
 	}
 }
 
