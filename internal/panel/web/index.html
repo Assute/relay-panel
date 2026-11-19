@@ -242,6 +242,22 @@ pre{background:var(--hover);border:1px solid var(--line);border-radius:8px;paddi
   .navitem{font-size:9px;gap:2px}
   .navitem svg{width:16px;height:16px}
 }
+/* 线路页：分组折叠列表 */
+.grp{border-bottom:1px solid var(--line)}
+.grp:last-child{border-bottom:none}
+.grp-hd{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;
+  user-select:none;transition:background .12s}
+.grp-hd:hover{background:var(--hover)}
+.grp-hd .caret{display:flex;color:var(--dim);transition:transform .15s;flex:none}
+.grp-hd .caret svg{width:15px;height:15px}
+.grp-hd .caret.open{transform:rotate(90deg)}
+.grp-title{flex:1;min-width:0}
+.grp-title b{font-size:13.5px}
+.grp-ops{display:flex;align-items:center;gap:4px;flex:none}
+.grp-bd{background:var(--bg)}
+.grp-bd table{width:100%}
+.grp-empty{padding:16px 14px;color:var(--dim);font-size:12.5px;
+  display:flex;align-items:center;gap:10px}
 </style>
 </head>
 <body>
@@ -279,6 +295,8 @@ const I = {
   check: svg('<polyline points="20 6 9 17 4 12"/>'),
   x: svg('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'),
   edit: svg('<path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/>'),
+  chevron: svg('<polyline points="9 18 15 12 9 6"/>'),
+  sync: svg('<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>'),
 };
 
 /* =====================================================================
@@ -303,7 +321,9 @@ let S = {
   ov: {},
   settings: {},
   theme: localStorage.getItem('theme') || 'light',
-  sel: new Set(),     // 表格选中
+  sel: new Set(),           // 表格选中的 id
+  allRules: [],             // 所有分组的规则，线路页折叠列表用
+  collapsed: new Set(),     // 折叠起来的分组 id
 };
 
 document.documentElement.dataset.theme = S.theme;
@@ -395,6 +415,7 @@ async function reload(){
   if(!S.cur && S.groups.length) S.cur = S.groups[0].group;
   if(S.cur) await loadGroup(S.cur.id);
   else { S.nodes=[]; S.rules=[]; S.events=[]; }
+  try{ S.allRules = arr(await api('GET','/api/rules')); }catch(e){ S.allRules = []; }
 }
 
 async function loadGroup(id){
@@ -469,12 +490,11 @@ function render(){
       <header class="topbar">
         <h1>${NAV.find(n=>n.k===S.view)?.t||''}</h1>
         ${S.groups.length?`
-          <select id="gsel" style="width:auto;min-width:130px" onchange="pickGroup(this.value)"
-            title="切换分组">
+          ${S.view==='routes'?'':`<select id="gsel" style="width:auto;min-width:130px" onchange="pickGroup(this.value)" title="切换分组">
             ${S.groups.map(x=>`<option value="${x.group.id}" ${S.cur&&S.cur.id===x.group.id?'selected':''}>${esc(x.group.name)}</option>`).join('')}
-          </select>
+          </select>`}
           <button class="ghost icon" title="新建分组" onclick="dlgGroup(1)">${I.plus}</button>
-          <button class="ghost icon" title="编辑当前分组" onclick="dlgGroup(0)">${I.edit}</button>
+          ${S.view==='routes'?'':`<button class="ghost icon" title="编辑当前分组" onclick="dlgGroup(0)">${I.edit}</button>`}
         `:`<button class="ghost" onclick="dlgGroup(1)">${I.plus} 新建分组</button>`}
         <div class="sp"></div>
         <span class="chip">当前 <b>${curName}</b></span>
@@ -587,16 +607,84 @@ function viewHome(){
    线路
    ===================================================================== */
 function viewRoutes(){
+  const gs = S.groups.map(x=>x.group);
+  const all = S.allRules || [];
+  const q = (S._q||'').trim().toLowerCase();
+
+  const rowsOf = gid => all.filter(r=>r.group_id===gid).filter(r=>{
+    if(!q) return true;
+    const addr = (r.dns_name||'')+':'+r.listen_port;
+    return (r.name||'').toLowerCase().includes(q)
+        || String(r.listen_port).includes(q)
+        || (r.target_host||'').toLowerCase().includes(q)
+        || addr.toLowerCase().includes(q);
+  });
+
+  const body = gs.map(g => {
+    const rs = rowsOf(g.id);
+    const open = !S.collapsed.has(g.id);
+    const curNode = (S.nodes.find(x=>x.node.id===g.current_node)||{}).node;
+    return `
+    <div class="grp">
+      <div class="grp-hd" onclick="toggleGrp(${g.id})">
+        <span class="caret ${open?'open':''}">${I.chevron}</span>
+        <div class="grp-title">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <b>${esc(g.name)}</b>
+            <span class="mono sm" style="color:var(--acc)">${esc(g.dns_name||'未填域名')}</span>
+            <span class="tag t-grey">${rs.length} 条</span>
+            ${g.current_node?`<span class="tag t-ok">→ ${esc((curNode&&curNode.name)||'节点')}</span>`:'<span class="tag t-warn">未分配节点</span>'}
+          </div>
+        </div>
+        <div class="grp-ops" onclick="event.stopPropagation()">
+          <button class="icon ghost" title="同步 DNS 到当前节点 IP" onclick="syncDNS(${g.id})">${I.sync}</button>
+          <button class="icon ghost" title="编辑分组" onclick="dlgGroup(0,${g.id})">${I.edit}</button>
+          <button class="ghost" onclick="dlgRule(0,${g.id})">${I.plus} 线路</button>
+        </div>
+      </div>
+      ${open?`
+      <div class="grp-bd">
+        ${rs.length?`
+        <table><thead><tr>
+          <th style="width:38px"><input type="checkbox" onchange="selAll(this,'rule')"></th>
+          <th>线路</th><th>连接地址</th><th>转发目标</th>
+          <th style="width:90px">状态</th><th style="width:130px" class="ops">操作</th>
+        </tr></thead><tbody>
+        ${rs.map(r=>{
+          const addr = (g.dns_name||'')+':'+r.listen_port;
+          return `<tr data-search="${esc(r.name||'')} ${r.listen_port} ${esc(addr)}">
+            <td><input type="checkbox" data-sel="rule" data-id="${r.id}" onchange="selOne(this)"></td>
+            <td>
+              <div>${esc(r.name||'—')}</div>
+              <div class="dim sm">${curNode?`→ ${esc(curNode.name)} ${esc(curNode.ip)}`:'→ 还没分配节点'}</div>
+            </td>
+            <td><span class="mono" style="font-weight:600;white-space:nowrap">${esc(addr)}</span></td>
+            <td><span class="mono" style="white-space:nowrap">${esc(r.target_host)}:${r.target_port}</span></td>
+            <td>${r.enabled?'<span class="tag t-ok">启用</span>':'<span class="tag t-grey">停用</span>'}</td>
+            <td class="ops">
+              <button class="icon ghost" title="编辑" onclick="dlgRule(${r.id})">${I.edit}</button>
+              <button class="icon ghost" title="${r.enabled?'停用':'启用'}" onclick="toggleRule(${r.id},${r.enabled?0:1})">${I.power}</button>
+              <button class="icon ghost" title="删除" onclick="delRule(${r.id})">${I.trash}</button>
+            </td>
+          </tr>`;
+        }).join('')}
+        </tbody></table>`
+        :`<div class="grp-empty">还没有线路 <button class="ghost" onclick="dlgRule(0,${g.id})">${I.plus} 添加</button></div>`}
+      </div>`:''}
+    </div>`;
+  }).join('');
+
+  const total = all.length;
   return `
   <div class="card">
     <div class="toolbar">
       <div class="search">${I.search}
-        <input type="text" id="q" placeholder="搜索名称或端口" oninput="filterRows()">
+        <input type="text" id="q" placeholder="搜索名称、端口或地址" value="${esc(S._q||'')}" oninput="onSearch(this.value)">
       </div>
       <div class="sp"></div>
       <button onclick="dlgImport()">${I.upload} 批量导入</button>
       <button onclick="dlgExport()">${I.download} 导出</button>
-      <button class="primary" onclick="dlgRule()">${I.plus} 添加线路</button>
+      <button class="primary" onclick="newRulePick()">${I.plus} 添加线路</button>
     </div>
     <div class="toolbar" id="batchbar" style="display:none;background:var(--accsoft)">
       <span class="sm">已选 <b id="selcnt">0</b> 条</span>
@@ -605,51 +693,39 @@ function viewRoutes(){
       <div class="sp"></div>
       <button class="danger" onclick="batchDelete()">${I.trash} 删除选中</button>
     </div>
-    <div class="bd flush">
-      <table><thead><tr>
-        <th style="width:38px"><input type="checkbox" onchange="selAll(this,'rule')"></th>
-        <th>入口 / 线路</th>
-        <th>连接地址</th>
-        <th>转发目标</th>
-        <th style="width:90px">状态</th>
-        <th style="width:130px" class="ops">操作</th>
-      </tr></thead><tbody>
-      ${S.rules.length?S.rules.map(r=>{
-        const host = (S.cur.dns_name||'').trim();
-        const addr = host ? host+':'+r.listen_port : ':'+r.listen_port;
-        const cur = S.nodes.find(x=>x.node.id===S.cur.current_node)?.node;
-        return `
-        <tr data-search="${esc(r.name||'')} ${r.listen_port} ${esc(r.target_host||'')} ${esc(addr)}">
-          <td><input type="checkbox" data-sel="rule" data-id="${r.id}" onchange="selOne(this)"></td>
-          <td>
-            <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
-              <span>${esc(r.name||'—')}</span>
-              <span class="tag t-info">${esc(S.cur.name)}</span>
-              ${(r.protocol&&r.protocol!=='tcp')?`<span class="tag t-grey">${esc(r.protocol.toUpperCase())}</span>`:''}
-            </div>
-            <div class="dim sm">${cur?`→ ${esc(cur.name)} ${esc(cur.ip)}`:'→ 还没分配节点'}</div>
-          </td>
-          <td>
-            <span class="mono" style="font-weight:600;white-space:nowrap">${esc(addr)}</span>
-            ${host?'':'<div class="dim sm" style="color:var(--warn)">还没配域名，去分组里填</div>'}
-          </td>
-          <td><span class="mono" style="white-space:nowrap">${esc(r.target_host)}:${r.target_port}</span></td>
-          <td>${r.enabled?'<span class="tag t-ok">启用</span>':'<span class="tag t-grey">停用</span>'}</td>
-          <td class="ops">
-            <button class="icon ghost" title="编辑" onclick="dlgRule(${r.id})">${I.edit}</button>
-            <button class="icon ghost" title="${r.enabled?'停用':'启用'}" onclick="toggleRule(${r.id},${r.enabled?0:1})">${I.power}</button>
-            <button class="icon ghost" title="删除" onclick="delRule(${r.id})">${I.trash}</button>
-          </td>
-        </tr>`;
-      }).join(''):`<tr><td colspan="6"><div class="empty">${I.empty}
-          <p>还没有转发线路。监听端口是域名后面那个端口，转发目标是流量要去的地方。</p>
-          <button class="primary" onclick="dlgRule()">${I.plus} 添加第一条</button>
-          <button onclick="dlgImport()">${I.upload} 批量导入</button></div></td></tr>`}
-      </tbody></table>
-    </div>
+    ${gs.length?`<div class="bd flush">${body}</div>`
+      :`<div class="bd"><div class="empty">${I.empty}
+         <p>还没有分组。一个分组 = 一条域名 + 一组节点 + 一套线路。</p>
+         <button class="primary" onclick="dlgGroup(1)">${I.plus} 新建分组</button></div></div>`}
   </div>`;
 }
 
+function toggleGrp(id){
+  if(S.collapsed.has(id)) S.collapsed.delete(id); else S.collapsed.add(id);
+  render();
+}
+
+function onSearch(v){
+  S._q = v;
+  const was = document.activeElement;
+  render();
+  const el = $('#q');
+  if(el){ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+}
+
+// 「添加线路」按钮：只有一个分组时直接用，多个分组先让选
+function newRulePick(){
+  if(S.groups.length <= 1){ dlgRule(0, S.groups[0]?.group.id || 0); return; }
+  dlgRule(0, 0);
+}
+
+async function syncDNS(gid){
+  try{
+    const r = await api('POST','/api/groups/'+gid+'/sync-dns',{});
+    toast(`已把域名指到 ${r.node} (${r.ip})`);
+    await reload(); render();
+  }catch(e){ alert(e.message); }
+}
 /* =====================================================================
    节点
    ===================================================================== */
@@ -924,8 +1000,9 @@ function modal(title, bodyHtml, footHtml){
 const closeDlg = () => document.querySelector('dialog')?.close();
 
 /* ---------- 分组 ---------- */
-function dlgGroup(isNew){
-  const g = (isNew || !S.cur) ? null : S.cur;
+function dlgGroup(isNew, gid){
+  const g = isNew ? null
+    : (gid ? (S.groups.find(x=>x.group.id===gid)||{}).group : S.cur);
   modal(g?'编辑分组':'新建分组', `
     <label>分组名</label>
     <input id="f_name" type="text" value="${g?esc(g.name):''}" placeholder="例如：日本线路">
@@ -978,6 +1055,7 @@ async function saveGroup(id){
     dns_ttl: 60,
   };
   if(!body.name){ alert('分组名不能为空'); return; }
+  if(!body.dns_name){ alert('域名必须填，切节点靠它'); return; }
   try{
     if(id) await api('PATCH','/api/groups/'+id,body);
     else   await api('POST','/api/groups',body);
@@ -1087,19 +1165,15 @@ async function copyCmd(){
 }
 
 /* ---------- 线路 ---------- */
-function dlgRule(id){
-  const r = id ? S.rules.find(x=>x.id===id) : null;
-  const gname = r ? (S.groups.find(x=>x.group.id===r.group_id)?.group.name || S.cur.name) : '';
+function dlgRule(id, gid){
+  const r = id ? (S.allRules.find(x=>x.id===id) || S.rules.find(x=>x.id===id)) : null;
+  const defGid = r ? r.group_id : (gid || (S.cur && S.cur.id) || 0);
   modal(r?'编辑线路':'添加转发线路', `
-    ${r
-      ? `<label>所属分组</label>
-         <div style="padding:7px 0;color:var(--txt)">${esc(gname)}</div>
-         <div class="hint" style="margin-top:0">要换分组请删掉重建，端口规则按分组校验。</div>`
-      : `<label>所属分组</label>
-         <select id="r_gid">
-           ${S.groups.map(x=>`<option value="${x.group.id}" ${S.cur&&S.cur.id===x.group.id?'selected':''}>${esc(x.group.name)}</option>`).join('')}
-         </select>
-         <div class="hint" style="margin-top:0">规则会同步到这个分组里的所有节点。</div>`}
+    <label>所属分组</label>
+    <select id="r_gid">
+      ${S.groups.map(x=>`<option value="${x.group.id}" ${x.group.id===defGid?'selected':''}>${esc(x.group.name)}</option>`).join('')}
+    </select>
+    <div class="hint" style="margin-top:0">规则会同步到这个分组里的所有节点，端口按分组查重。</div>
     <label>名称</label>
     <input id="r_name" type="text" value="${r?esc(r.name||''):''}" placeholder="新加坡">
     <label>监听端口（域名后面那个端口）</label>
@@ -1133,23 +1207,19 @@ async function saveRule(id){
     alert('监听端口、目标地址、目标端口都要填');
     return;
   }
-  const gid = id ? 0 : (parseInt($('#r_gid')?.value||'0',10) || S.cur.id);
+  const gid = parseInt($('#r_gid')?.value||'0',10) || (S.cur && S.cur.id) || 0;
   try{
     if(id){
+      body.group_id = gid;
       await api('PATCH','/api/rules/'+id, body);
-      closeDlg(); await loadGroup(S.cur.id); render();
+      closeDlg(); await reload(); render();
       toast('线路已保存');
     }else{
       await api('POST','/api/groups/'+gid+'/rules', body);
       closeDlg();
-      if(gid !== S.cur.id){
-        const g = S.groups.find(x=>x.group.id===gid)?.group;
-        await reload(); render();
-        toast('已添加到「'+(g?g.name:'该分组')+'」，切换分组后可见');
-      }else{
-        await loadGroup(S.cur.id); render();
-        toast('线路已创建，节点 15 秒内开始监听');
-      }
+      await reload(); render();
+      const g = S.groups.find(x=>x.group.id===gid)?.group;
+      toast('已添加到「'+(g?g.name:'该分组')+'」，节点 15 秒内开始监听');
     }
   }catch(e){ alert(e.message); }
 }

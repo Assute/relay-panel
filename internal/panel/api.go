@@ -77,6 +77,8 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("POST /api/dns/verify", a.auth(http.HandlerFunc(a.verifyDNS)))
 	mux.Handle("POST /api/dns/zones", a.auth(http.HandlerFunc(a.listZones)))
 	mux.Handle("POST /api/groups/{id}/dns-test", a.auth(http.HandlerFunc(a.testGroupDNS)))
+	mux.Handle("POST /api/groups/{id}/sync-dns", a.auth(http.HandlerFunc(a.syncGroupDNS)))
+	mux.Handle("GET /api/rules", a.auth(http.HandlerFunc(a.AllRules)))
 
 	mux.Handle("/", webHandler())
 
@@ -216,6 +218,10 @@ func (a *API) createGroup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "分组名不能为空"})
 		return
 	}
+	if strings.TrimSpace(in.DNSName) == "" {
+		writeJSON(w, 400, map[string]string{"error": "域名不能为空，切流靠它"})
+		return
+	}
 	g, err := a.store.CreateGroup(in.toGroup())
 	if err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
@@ -235,6 +241,10 @@ func (a *API) patchGroup(w http.ResponseWriter, r *http.Request) {
 	var in groupIn
 	if err := readJSON(r, &in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
+		return
+	}
+	if strings.TrimSpace(in.DNSName) == "" {
+		writeJSON(w, 400, map[string]string{"error": "域名不能为空，切流靠它"})
 		return
 	}
 	ng := in.toGroup()
@@ -545,6 +555,7 @@ func (a *API) patchRule(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		Name       string `json:"name"`
+		GroupID    int64  `json:"group_id"`
 		ListenPort int    `json:"listen_port"`
 		TargetHost string `json:"target_host"`
 		TargetPort int    `json:"target_port"`
@@ -554,6 +565,14 @@ func (a *API) patchRule(w http.ResponseWriter, r *http.Request) {
 	if err := readJSON(r, &in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
 		return
+	}
+	// 换分组：端口冲突会在 UpdateRule 里按新分组重新校验
+	if in.GroupID > 0 && in.GroupID != target.GroupID {
+		if a.store.Group(in.GroupID) == nil {
+			writeJSON(w, 400, map[string]string{"error": "目标分组不存在"})
+			return
+		}
+		target.GroupID = in.GroupID
 	}
 	if in.Name != "" {
 		target.Name = strings.TrimSpace(in.Name)
@@ -707,6 +726,39 @@ func (a *API) listZones(w http.ResponseWriter, r *http.Request) {
 		out = append(out, map[string]string{"id": z.ID, "name": z.Name})
 	}
 	writeJSON(w, 200, out)
+}
+
+// syncGroupDNS 手动把域名指到当前节点的 IP，用于 IP 变动或记录被手工改坏后拉起
+func (a *API) syncGroupDNS(w http.ResponseWriter, r *http.Request) {
+	g := a.store.Group(pathID(r, "id"))
+	if g == nil {
+		writeJSON(w, 404, map[string]string{"error": "分组不存在"})
+		return
+	}
+	if strings.TrimSpace(g.DNSName) == "" {
+		writeJSON(w, 400, map[string]string{"error": "分组没填域名"})
+		return
+	}
+	n := a.store.Node(g.CurrentNode)
+	if n == nil {
+		writeJSON(w, 400, map[string]string{"error": "分组还没分配节点，先在节点页添加并等它上线"})
+		return
+	}
+	if strings.TrimSpace(n.IP) == "" {
+		writeJSON(w, 400, map[string]string{"error": "当前节点还没上报 IP，等它心跳一次"})
+		return
+	}
+	if err := a.dns.SetA(g, n.IP, g.DNSTTL); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "DNS 更新失败: " + err.Error()})
+		return
+	}
+	got, _ := a.dns.GetA(g)
+	if got != "" && got != n.IP {
+		a.store.Alert(g.ID, n.ID, "warn", "同步后记录仍指向 "+got+"，可能有 CDN 缓存")
+	}
+	log.Printf("group %d: 手动同步 DNS -> %s (%s)", g.ID, n.IP, g.DNSName)
+	a.store.Alert(g.ID, n.ID, "info", "已手动同步 DNS 指向 "+n.IP)
+	writeJSON(w, 200, map[string]any{"ok": true, "ip": n.IP, "current": got, "node": n.Name})
 }
 
 // testGroupDNS 用该分组的 zone/域名跑一次真实查询，看配置对不对

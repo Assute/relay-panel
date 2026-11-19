@@ -175,6 +175,35 @@ func (a *API) ExportRules(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, sb.String())
 }
 
+// AllRules 返回所有分组的规则，带上分组名和域名，供折叠列表一次渲染
+func (a *API) AllRules(w http.ResponseWriter, r *http.Request) {
+	type row struct {
+		Rule
+		GroupName string `json:"group_name"`
+		DNSName   string `json:"dns_name"`
+		CurrentIP string `json:"current_ip"`
+		CurrentNM string `json:"current_name"`
+	}
+	out := make([]row, 0)
+	for _, g := range a.store.Groups() {
+		cur := a.store.Node(g.CurrentNode)
+		curIP, curNM := "", ""
+		if cur != nil {
+			curIP, curNM = cur.IP, cur.Name
+		}
+		for _, rl := range a.store.Rules(g.ID) {
+			out = append(out, row{
+				Rule:      rl,
+				GroupName: g.Name,
+				DNSName:   g.DNSName,
+				CurrentIP: curIP,
+				CurrentNM: curNM,
+			})
+		}
+	}
+	writeJSON(w, 200, out)
+}
+
 // ---------- 批量操作 ----------
 
 type batchIn struct {
