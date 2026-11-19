@@ -38,6 +38,7 @@ func (a *API) Routes() http.Handler {
 	// 公开
 	mux.HandleFunc("POST /api/login", a.login)
 	mux.HandleFunc("POST /agent/beat", a.agentBeat)
+	mux.HandleFunc("POST /agent/stats", a.agentStats)
 	mux.HandleFunc("GET /i.sh", a.installScript)
 	mux.HandleFunc("GET /dl/{name}", a.dlHandler)
 
@@ -910,6 +911,36 @@ type beatResp struct {
 	Iface      string       `json:"iface,omitempty"`
 	BillMode   string       `json:"bill_mode,omitempty"`
 	Config     *agentConfig `json:"config,omitempty"`
+}
+
+// statsReq 实时指标快通道：只有展示用的数字，不带配置也不动账本。
+// 心跳 15 秒一次，要「实时」就得单独走一条 2 秒的轻请求。
+type statsReq struct {
+	Key         string `json:"key"`
+	Fingerprint string `json:"fingerprint"`
+	Iface       string `json:"iface"`
+	RxBps       int64  `json:"rx_bps"`
+	TxBps       int64  `json:"tx_bps"`
+	CPUPct      int    `json:"cpu_pct"`
+	MemPct      int    `json:"mem_pct"`
+	DiskPct     int    `json:"disk_pct"`
+}
+
+// agentStats 每两秒收一次节点的实时速率和负载。
+// 只写内存，不落盘、不返回配置——这条路径唯一的作用是让面板上的数字动起来。
+func (a *API) agentStats(w http.ResponseWriter, r *http.Request) {
+	var in statsReq
+	if err := readJSON(r, &in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "bad_request"})
+		return
+	}
+	nodeID, ok := a.store.AuthStats(in.Key, in.Fingerprint)
+	if !ok {
+		writeJSON(w, 401, map[string]string{"error": "token_invalid"})
+		return
+	}
+	a.store.UpdateMetrics(nodeID, in.RxBps, in.TxBps, in.CPUPct, in.MemPct, in.DiskPct, in.Iface)
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // clientIP 从请求里取对端真实公网 IP，处理反代和 Cloudflare

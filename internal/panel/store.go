@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -569,6 +570,57 @@ func (s *Store) DeleteRule(id int64) error {
 }
 
 // ---------- Agent 侧 ----------
+
+// AuthStats 实时指标的鉴权：只校验，不兑换 token、不写库。
+// 这条路径每两秒就走一次，不能碰 AuthAgent 里那套 token → session_key 的兑换，
+// 否则节点还没收到新 key 就被换掉了，之后所有请求全 401。
+func (s *Store) AuthStats(key, fp string) (int64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.db.Nodes {
+		n := &s.db.Nodes[i]
+		switch {
+		case n.SessionKey != "" && n.SessionKey == key:
+			// 正常情况：注册后用的都是 session_key
+		case strings.HasPrefix(n.Token, "used-"):
+			continue // 已兑换过，旧 token 作废
+		case n.Token == key:
+			// 还没走完第一次心跳，先放行
+		default:
+			continue
+		}
+		if n.Fingerprint != "" && fp != "" && n.Fingerprint != fp {
+			return 0, false
+		}
+		return n.ID, true
+	}
+	return 0, false
+}
+
+// UpdateMetrics 只更新展示用的实时字段，不落盘。
+// 两秒一次的高频上报如果每次都写 JSON，磁盘会被无意义地刷。
+// 下一次心跳（15 秒）会把内存里的值顺带写进 data.json。
+func (s *Store) UpdateMetrics(nodeID, rxBps, txBps int64, cpu, mem, disk int, iface string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.db.Nodes {
+		if s.db.Nodes[i].ID != nodeID {
+			continue
+		}
+		n := &s.db.Nodes[i]
+		n.RxBps, n.TxBps = rxBps, txBps
+		n.CPUPct, n.MemPct, n.DiskPct = cpu, mem, disk
+		if iface != "" {
+			n.Iface = iface
+		}
+		now := time.Now().Unix()
+		if n.FirstSeen == 0 {
+			n.FirstSeen = now
+		}
+		n.LastSeen = now // 掉线判断也跟着这个走，不用等下一次心跳
+		return
+	}
+}
 
 // AuthAgent 用 token 或 session_key 认证，token 首次使用时换发 session_key
 func (s *Store) AuthAgent(key, fp string) (nodeID int64, sessionKey string, fresh bool, err error) {

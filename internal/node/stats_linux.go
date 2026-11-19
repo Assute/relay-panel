@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -18,8 +19,10 @@ type cpuTimes struct {
 	total uint64
 }
 
-// SysSampler 保存上一次 CPU 累计值，用于算两次心跳之间的平均占用。
+// SysSampler 保存上一次 CPU 累计值，用于算两次采样之间的平均占用。
+// 速率快通道和心跳会并发调 CPU()，所以带锁。
 type SysSampler struct {
+	mu     sync.Mutex
 	last   cpuTimes
 	primed bool
 }
@@ -27,6 +30,8 @@ type SysSampler struct {
 // CPU 返回上次采样以来的平均 CPU 占用百分比。
 // 第一次调用只建立基准，返回 0。
 func (s *SysSampler) CPU() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	cur, ok := readCPUTimes()
 	if !ok {
 		return 0

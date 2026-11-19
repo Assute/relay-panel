@@ -5,12 +5,15 @@
 // 这些数字只在面板上显示，不影响转发和计费，所以缺了不报错。
 package node
 
+import "sync"
+
 type cpuTimes struct {
 	idle  uint64
 	total uint64
 }
 
 type SysSampler struct {
+	mu     sync.Mutex
 	last   cpuTimes
 	primed bool
 }

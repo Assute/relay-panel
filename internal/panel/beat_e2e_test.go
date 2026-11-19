@@ -90,7 +90,107 @@ func patchNodeHTTP(t *testing.T, base, sid string, id int64, payload string) {
 	}
 }
 
-// 整条链路：首次心跳对齐 → 增量 → 清零 → 改口径 → 节点侧重装
+// 实时指标快通道：2 秒一条轻请求，只刷展示字段。
+// 关键点是不能让这条高频路径碰 token 兑换，否则节点会在收到 session_key
+// 之前就把它换掉，之后所有请求全 401。
+func TestStatsChannel(t *testing.T) {
+	dir := t.TempDir()
+	cnf := DefaultConfig()
+	cnf.DB = filepath.Join(dir, "data.json")
+	cnf.Path = filepath.Join(dir, "config.json")
+	store, err := OpenStore(cnf.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateGroup(Group{Name: "g1", DNSName: "t.example.com", QuotaBytes: 200 * 1 << 30, DNSTTL: 60}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := store.CreateNode(Node{GroupID: 1, Name: "n1", Iface: "ens5", BillMode: "tx", Token: "tok-stats"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := NewAPI(store, cnf, NewSessionStore(), NewManagedDNS(cnf), NewScheduler(store, NewManagedDNS(cnf), cnf))
+	srv := httptest.NewServer(api.Routes())
+	defer srv.Close()
+
+	postStats := func(key string, rx, tx int64) int {
+		body := fmt.Sprintf(`{"key":%q,"fingerprint":"fp","iface":"ens5","rx_bps":%d,"tx_bps":%d,"cpu_pct":12,"mem_pct":40,"disk_pct":55}`, key, rx, tx)
+		resp, err := http.Post(srv.URL+"/agent/stats", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("stats 请求失败: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// 还没走心跳：token 直接用于 stats 应该放行，且不能把 token 兑换掉
+	if code := postStats("tok-stats", 13040, 6960); code != 200 {
+		t.Fatalf("stats 应放行，HTTP %d", code)
+	}
+	if got := store.Node(n.ID); got.SessionKey != "" {
+		t.Fatal("stats 不该触发 token 兑换，否则节点还没拿到 session_key 就被换掉了")
+	}
+	live := *store.Node(n.ID)
+	if live.RxBps != 13040 || live.TxBps != 6960 || live.CPUPct != 12 || live.DiskPct != 55 {
+		t.Fatalf("实时指标没写进去: %+v", live)
+	}
+	if live.FirstSeen == 0 || live.LastSeen == 0 {
+		t.Fatal("stats 也应该建立首次心跳时间，否则面板上一片空白")
+	}
+
+	// 走一次心跳，token 兑换成 session_key
+	p := beatPayload{Key: "tok-stats", Fingerprint: "fp", Iface: "ens5", NicAcc: 100, Version: 1, Agent: "stamp"}
+	sk := p.post(t, srv.URL)
+	if sk == "" {
+		t.Fatal("心跳没换发 session_key")
+	}
+
+	// 旧 token 这时已经作废
+	if code := postStats("tok-stats", 1, 1); code != 401 {
+		t.Fatalf("作废的 token 应该 401，实际 %d", code)
+	}
+	if code := postStats(sk, 20480, 8192); code != 200 {
+		t.Fatalf("session_key 应该放行，实际 %d", code)
+	}
+	if got := *store.Node(n.ID); got.RxBps != 20480 || got.TxBps != 8192 {
+		t.Fatalf("速率没更新: rx=%d tx=%d", got.RxBps, got.TxBps)
+	}
+}
+
+// 指纹不一致时，stats 也要拒绝
+func TestStatsRejectsWrongFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	cnf := DefaultConfig()
+	cnf.DB = filepath.Join(dir, "data.json")
+	cnf.Path = filepath.Join(dir, "config.json")
+	store, err := OpenStore(cnf.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateGroup(Group{Name: "g1", DNSName: "t.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := store.CreateNode(Node{GroupID: 1, Name: "n1", Token: "tok-fp", Fingerprint: "right"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := NewAPI(store, cnf, NewSessionStore(), NewManagedDNS(cnf), NewScheduler(store, NewManagedDNS(cnf), cnf))
+	srv := httptest.NewServer(api.Routes())
+	defer srv.Close()
+
+	body := `{"key":"tok-fp","fingerprint":"wrong","iface":"ens5","rx_bps":1,"tx_bps":1}`
+	resp, err := http.Post(srv.URL+"/agent/stats", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("指纹不符应 401，实际 %d", resp.StatusCode)
+	}
+	if got := store.Node(n.ID).LastSeen; got != 0 {
+		t.Fatal("被拒的请求不该更新节点状态")
+	}
+}
 func TestBeatOverHTTP(t *testing.T) {
 	const GiB = int64(1024 * 1024 * 1024)
 	const MiB = int64(1024 * 1024)

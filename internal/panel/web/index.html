@@ -383,10 +383,41 @@ function loadCell(x){
       <span class="num">${p}%</span></div>`;
   }).join('')}</div>`;
 }
+// 在线时长单元格：心跳断两分钟就把时间标红，别让人盯着一个不动的数字
+function onlineCell(x){
+  const n = x.node;
+  const stale = n.last_seen>0 && (Date.now()/1000-n.last_seen>120);
+  const big = n.first_seen ? dur(Date.now()/1000-n.first_seen) : '—';
+  return `<span${stale?' style="color:var(--err)"':''}>${big}</span>
+    <div class="sm dim" title="最近一次心跳">${ago(n.last_seen)}</div>`;
+}
 // 上下行速率单元格
 function rateCell(x, which){
   if(!fresh(x)) return '<span class="dim">—</span>';
   return rate(which==='up' ? x.node.tx_bps : x.node.rx_bps);
+}
+// 只改会变的几个格子，不重绘整页：2 秒一次刷数字，滚动条和输入焦点都不该动
+function patchLive(){
+  const map = new Map(S.nodes.map(x=>[String(x.node.id), x]));
+  document.querySelectorAll('tr[data-node]').forEach(tr=>{
+    const x = map.get(tr.dataset.node);
+    if(!x) return;
+    const put = (f,html)=>{ const c = tr.querySelector('[data-f="'+f+'"]'); if(c) c.innerHTML = html; };
+    put('up', rateCell(x,'up'));
+    put('down', rateCell(x,'down'));
+    put('rate', `↑ ${rateCell(x,'up')}<br>↓ ${rateCell(x,'down')}`);
+    put('load', loadCell(x));
+    put('online', onlineCell(x));
+    put('usage', usageCell(x));
+    put('seen', ago(x.node.last_seen));
+  });
+  const box = document.getElementById('liveRate');
+  if(box){
+    const live = S.nodes.filter(x=>fresh(x));
+    const up = live.reduce((a,x)=>a+(x.node.tx_bps||0),0);
+    const down = live.reduce((a,x)=>a+(x.node.rx_bps||0),0);
+    box.innerHTML = `↑ ${rate(up)} <span class="dim">/</span> ↓ ${rate(down)}`;
+  }
 }
 // 节点的用量单元格：没上报过就是没数据，不能显示成「0 B」让人以为在正常统计
 function usageCell(x){
@@ -610,7 +641,7 @@ function viewHome(){
   <div class="stats">
     <div class="stat">
       <div class="k">实时速率</div>
-      <div class="v rate" style="font-size:17px">↑ ${rate(upBps)} <span class="dim">/</span> ↓ ${rate(downBps)}</div>
+      <div class="v rate" id="liveRate" style="font-size:17px">↑ ${rate(upBps)} <span class="dim">/</span> ↓ ${rate(downBps)}</div>
       <div class="d">上行 / 下行 · ${live.length} 台在报</div>
     </div>
     <div class="stat">
@@ -642,14 +673,14 @@ function viewHome(){
       <table><thead><tr><th style="width:64px">#</th><th>节点</th><th style="width:110px">状态</th><th style="width:130px">速率</th><th style="width:250px">用量</th><th style="width:110px">最近心跳</th></tr></thead><tbody>
       ${exits.length?exits.map(x=>{
         const n=x.node, isCur=S.cur.current_node===n.id;
-        return `<tr>
+        return `<tr data-node="${n.id}">
           <td class="dim mono">${n.sort_order}</td>
           <td>${esc(n.name)}${isCur?' <span class="tag t-info">当前</span>':''}${n.is_backup?' <span class="tag t-warn">备用</span>':''}
             <div class="dim sm mono">${n.ip?esc(n.ip):'<span style="color:var(--warn)">IP 待上报</span>'}</div></td>
           <td>${statusTag(n.status)}</td>
-          <td class="sm rate">↑ ${rateCell(x,'up')}<br>↓ ${rateCell(x,'down')}</td>
-          <td>${usageCell(x)}</td>
-          <td class="sm dim">${ago(n.last_seen)}</td>
+          <td class="sm rate" data-f="rate">↑ ${rateCell(x,'up')}<br>↓ ${rateCell(x,'down')}</td>
+          <td data-f="usage">${usageCell(x)}</td>
+          <td class="sm dim" data-f="seen">${ago(n.last_seen)}</td>
         </tr>`;
       }).join(''):`<tr><td colspan="6" class="dim" style="text-align:center;padding:28px">还没有节点</td></tr>`}
       </tbody></table>
@@ -822,8 +853,7 @@ function viewNodes(){
       </tr></thead><tbody>
       ${S.nodes.length?S.nodes.map(x=>{
         const n=x.node, isCur=S.cur.current_node===n.id;
-        const stale = n.last_seen>0 && (Date.now()/1000-n.last_seen>120);
-        return `<tr>
+        return `<tr data-node="${n.id}">
           <td><input type="checkbox" data-sel="node" data-id="${n.id}" onchange="selOne(this)"></td>
           <td class="dim mono">${n.sort_order}</td>
           <td>${esc(n.name)}${isCur?' <span class="tag t-info">当前</span>':''}${n.is_backup?' <span class="tag t-warn">备用</span>':''}
@@ -832,12 +862,11 @@ function viewNodes(){
           <td>${statusTag(n.status)}
             <div class="sm" style="margin-top:3px">
               <span class="dim">${x.online?'在线':'离线'}</span></div></td>
-          <td class="sm rate">${rateCell(x,'up')}</td>
-          <td class="sm rate">${rateCell(x,'down')}</td>
-          <td>${loadCell(x)}</td>
-          <td class="sm"${stale?' style="color:var(--err)"':''}>${n.first_seen?dur(Date.now()/1000-n.first_seen):'—'}
-            <div class="sm dim" title="最近一次心跳">${ago(n.last_seen)}</div></td>
-          <td>${usageCell(x)}</td>
+          <td class="sm rate" data-f="up">${rateCell(x,'up')}</td>
+          <td class="sm rate" data-f="down">${rateCell(x,'down')}</td>
+          <td data-f="load">${loadCell(x)}</td>
+          <td class="sm" data-f="online">${onlineCell(x)}</td>
+          <td data-f="usage">${usageCell(x)}</td>
           <td class="ops">
             <button class="icon ghost" title="复制对接命令" onclick="nodeCmd(${n.id})">${I.copy}</button>
             <button class="icon ghost" title="编辑" onclick="dlgNode(${n.id})">${I.edit}</button>
@@ -1468,10 +1497,23 @@ async function batchEnable(on){
    ===================================================================== */
 (async function(){
   await boot();
+  // 15 秒：全量刷新（分组、规则、告警、事件）
   setInterval(async ()=>{
     if(!S.user) return;
     try{ await reload(); render(); }catch(e){}
   }, 15000);
+
+  // 2 秒：只把节点那几行的实时数字换掉，不重绘整页。
+  // 节点每 2 秒推一次 /agent/stats，这里跟上才有「实时」的感觉。
+  setInterval(async ()=>{
+    if(!S.user || !S.cur) return;
+    if(S.view!=='home' && S.view!=='nodes') return;
+    if(document.querySelector('dialog[open]')) return; // 正在编辑，别动 DOM
+    try{
+      S.nodes = arr(await api('GET','/api/groups/'+S.cur.id+'/nodes'));
+      patchLive();
+    }catch(e){}
+  }, 2000);
 })();
 </script>
 </body>

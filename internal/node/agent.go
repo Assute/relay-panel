@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -47,15 +48,40 @@ type beatResp struct {
 	Config     *agentConfig `json:"config,omitempty"`
 }
 
+// statsReq 实时指标快通道：只有展示用的数字，不动账本也不要配置。
+type statsReq struct {
+	Key         string `json:"key"`
+	Fingerprint string `json:"fingerprint"`
+	Iface       string `json:"iface"`
+	RxBps       int64  `json:"rx_bps"`
+	TxBps       int64  `json:"tx_bps"`
+	CPUPct      int    `json:"cpu_pct"`
+	MemPct      int    `json:"mem_pct"`
+	DiskPct     int    `json:"disk_pct"`
+}
+
 type Agent struct {
 	cnf   *Config
 	meter *NicMeter
 	fwd   *Forwarder
+	keyMu sync.RWMutex
 	key   string
 	ver   atomic.Int64
 	hc    *http.Client
 	fp    string
 	sys   SysSampler
+}
+
+func (a *Agent) currentKey() string {
+	a.keyMu.RLock()
+	defer a.keyMu.RUnlock()
+	return a.key
+}
+
+func (a *Agent) setKey(k string) {
+	a.keyMu.Lock()
+	a.key = k
+	a.keyMu.Unlock()
 }
 
 func NewAgent(c *Config, m *NicMeter, f *Forwarder) *Agent {
@@ -70,13 +96,22 @@ func NewAgent(c *Config, m *NicMeter, f *Forwarder) *Agent {
 }
 
 func (a *Agent) Run() {
-	// 速率按 3 秒采样才有「实时」的感觉；心跳 15 秒一次，中间全靠这个补齐。
+	// 速率按 1 秒采样，面板上的数字才有「实时」的感觉。
 	// 顺带把账本采样频率提上来，计数器中途归零丢的量也更少。
 	go func() {
-		t := time.NewTicker(3 * time.Second)
+		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		for range t.C {
 			a.meter.Sample()
+		}
+	}()
+
+	// 实时指标单独走 2 秒的快通道。心跳 15 秒一次，掺不了这个。
+	go func() {
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			a.pushStats()
 		}
 	}()
 
@@ -124,7 +159,7 @@ func (a *Agent) beat() error {
 	nicAcc := a.meter.Sample()
 	rxBps, txBps := a.meter.Rates()
 	req := beatReq{
-		Key:         a.key,
+		Key:         a.currentKey(),
 		Fingerprint: a.fp,
 		Iface:       a.meter.Iface(),
 		NicAcc:      int64(nicAcc),
@@ -165,7 +200,7 @@ func (a *Agent) beat() error {
 
 	// token 换成了 session_key，落盘
 	if br.SessionKey != "" {
-		a.key = br.SessionKey
+		a.setKey(br.SessionKey)
 		if err := a.cnf.SaveKey(br.SessionKey); err != nil {
 			log.Printf("保存 session key 失败: %v", err)
 		} else {
@@ -204,6 +239,29 @@ func (a *Agent) beat() error {
 
 	a.meter.Persist()
 	return nil
+}
+
+// pushStats 每两秒把实时速率和负载推给面板。
+// 失败一律静默：这是纯展示用的辅助通道，不能因为它打断主循环。
+// key 失效时下一轮心跳会重新注册或退出，这里不用管。
+func (a *Agent) pushStats() {
+	rx, tx := a.meter.Rates()
+	body, _ := json.Marshal(statsReq{
+		Key:         a.currentKey(),
+		Fingerprint: a.fp,
+		Iface:       a.meter.Iface(),
+		RxBps:       rx,
+		TxBps:       tx,
+		CPUPct:      a.sys.CPU(),
+		MemPct:      MemPct(),
+		DiskPct:     DiskPct(),
+	})
+	resp, err := a.hc.Post(a.cnf.Panel+"/agent/stats", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	_ = resp.Body.Close()
 }
 
 // Fingerprint 机器指纹，换机器就变，防止 token 被复用
