@@ -77,6 +77,15 @@ type Node struct {
 	// 不用登机器看 journalctl。
 	AgentStamp string `json:"agent_stamp"`
 
+	// 心跳带回来的实时观测值，只用于展示，不参与计费。
+	RxBps   int64 `json:"rx_bps"` // 下行，字节/秒
+	TxBps   int64 `json:"tx_bps"` // 上行，字节/秒
+	CPUPct  int   `json:"cpu_pct"`
+	MemPct  int   `json:"mem_pct"`
+	DiskPct int   `json:"disk_pct"`
+	// FirstSeen 第一次心跳的时间，面板上的「在线 X 天」按它算
+	FirstSeen int64 `json:"first_seen"`
+
 	SortOrder int    `json:"sort_order"`
 	Status    string `json:"status"`
 
@@ -452,6 +461,13 @@ func (s *Store) UpdateNode(n Node) error {
 			n.UsedBytes = s.db.Nodes[i].UsedBytes
 			n.AccountMigrated = s.db.Nodes[i].AccountMigrated
 			n.AgentStamp = s.db.Nodes[i].AgentStamp
+			// 实时观测值同理，编辑不该把它们清成 0
+			n.RxBps = s.db.Nodes[i].RxBps
+			n.TxBps = s.db.Nodes[i].TxBps
+			n.CPUPct = s.db.Nodes[i].CPUPct
+			n.MemPct = s.db.Nodes[i].MemPct
+			n.DiskPct = s.db.Nodes[i].DiskPct
+			n.FirstSeen = s.db.Nodes[i].FirstSeen
 			s.db.Nodes[i] = n
 			return s.save()
 		}
@@ -621,14 +637,30 @@ func (s *Store) ResetNodeKey(id int64) *Node {
 // 丢了），两边的基准就永久错位：要么用量一直不动，要么一次把网卡开机以来的
 // 全部流量算进来。改成减法后，节点那个单调累加值是唯一真相，面板只负责
 // 记起点，天然不会两本账打架。
-func (s *Store) AcceptBeat(nodeID, nicAcc, relayAcc, ver int64, agentStamp string) (wantVersion int64) {
+// Beat 一次心跳带回来的观测值。
+// 用结构体而不是一长串位置参数：字段只会越加越多，按位置传迟早接错。
+type Beat struct {
+	NodeID   int64
+	NicAcc   int64
+	RelayAcc int64
+	Version  int64
+	Agent    string
+	RxBps    int64 // 实时下行（字节/秒）
+	TxBps    int64 // 实时上行（字节/秒）
+	CPUPct   int
+	MemPct   int
+	DiskPct  int
+}
+
+func (s *Store) AcceptBeat(b Beat) (wantVersion int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.db.Nodes {
 		n := &s.db.Nodes[i]
-		if n.ID != nodeID {
+		if n.ID != b.NodeID {
 			continue
 		}
+		nicAcc := b.NicAcc
 
 		// 账本初始化。
 		// 旧版本用增量累加、库里已经有数的节点：用「已上报 - 已用」反推周期起点，
@@ -661,16 +693,23 @@ func (s *Store) AcceptBeat(nodeID, nicAcc, relayAcc, ver int64, agentStamp strin
 		}
 
 		n.NicReported = nicAcc
-		n.RelayReported = relayAcc
+		n.RelayReported = b.RelayAcc
+		// 实时速率和负载：只用于展示，不参与计费。
+		n.RxBps, n.TxBps = b.RxBps, b.TxBps
+		n.CPUPct, n.MemPct, n.DiskPct = b.CPUPct, b.MemPct, b.DiskPct
 		if used := nicAcc - n.CycleStartNic; used > 0 {
 			n.UsedBytes = used
 		} else {
 			n.UsedBytes = 0
 		}
-		if agentStamp != "" {
-			n.AgentStamp = agentStamp
+		if b.Agent != "" {
+			n.AgentStamp = b.Agent
 		}
-		n.LastSeen = time.Now().Unix()
+		now := time.Now().Unix()
+		if n.FirstSeen == 0 {
+			n.FirstSeen = now // 面板上「在线 X 天」从这里算
+		}
+		n.LastSeen = now
 		// 心跳到达说明在线，pending/dead 都拉回 standby
 		switch n.Status {
 		case StatusPending, StatusDead:

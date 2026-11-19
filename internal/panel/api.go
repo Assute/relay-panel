@@ -883,6 +883,12 @@ type beatReq struct {
 	Version     int64  `json:"version"`
 	// Agent 节点端构建标识，面板上直接显示，省得每次都登机器看日志
 	Agent string `json:"agent"`
+	// 实时观测值：上下行速率（字节/秒）和资源占用，只用于面板展示
+	RxBps   int64 `json:"rx_bps"`
+	TxBps   int64 `json:"tx_bps"`
+	CPUPct  int   `json:"cpu_pct"`
+	MemPct  int   `json:"mem_pct"`
+	DiskPct int   `json:"disk_pct"`
 }
 
 type agentRule struct {
@@ -939,7 +945,18 @@ func (a *API) agentBeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	before := a.store.Node(nodeID)
-	ver := a.store.AcceptBeat(nodeID, in.NicAcc, in.RelayAcc, in.Version, in.Agent)
+	ver := a.store.AcceptBeat(Beat{
+		NodeID:   nodeID,
+		NicAcc:   in.NicAcc,
+		RelayAcc: in.RelayAcc,
+		Version:  in.Version,
+		Agent:    in.Agent,
+		RxBps:    in.RxBps,
+		TxBps:    in.TxBps,
+		CPUPct:   in.CPUPct,
+		MemPct:   in.MemPct,
+		DiskPct:  in.DiskPct,
+	})
 	if before != nil && in.Agent != "" && before.AgentStamp != in.Agent {
 		log.Printf("node %d (%s): 节点端 %q -> %q", nodeID, before.Name, before.AgentStamp, in.Agent)
 	}

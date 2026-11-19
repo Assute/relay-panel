@@ -103,6 +103,17 @@ td.ops button{margin-left:4px}
 .bar.warn>i{background:var(--warn)}
 .bar.err>i{background:var(--err)}
 
+/* ---------- 负载条（CPU / 内存 / 磁盘） ---------- */
+.load{display:flex;flex-direction:column;gap:4px;min-width:148px}
+.load .row{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--dim);line-height:1}
+.load .row .lab{width:28px;flex:none}
+.load .row .track{flex:1;height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.load .row .fill{display:block;height:100%;border-radius:3px;background:var(--acc);transition:width .3s}
+.load .row .fill.warn{background:var(--warn)}
+.load .row .fill.err{background:var(--err)}
+.load .row .num{width:30px;text-align:right;flex:none;color:var(--txt);font-variant-numeric:tabular-nums}
+.rate{font-variant-numeric:tabular-nums;white-space:nowrap}
+
 /* ---------- 统计卡 ---------- */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:16px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;
@@ -337,6 +348,46 @@ function gb(v){
   while(n>=1024&&i<u.length-1){n/=1024;i++;}
   return (i>=3?n.toFixed(2):n.toFixed(0))+' '+u[i];
 }
+// 实时速率：面板存的是字节/秒，显示成比特（跟商家后台、监控面板一个口径）
+function rate(bytesPerSec){
+  const b = Number(bytesPerSec||0)*8;
+  if(b>=1e9) return (b/1e9).toFixed(2)+' Gbps';
+  if(b>=1e6) return (b/1e6).toFixed(2)+' Mbps';
+  if(b>=1e3) return (b/1e3).toFixed(2)+' Kbps';
+  return b.toFixed(0)+' bps';
+}
+// 在线时长
+function dur(sec){
+  const s = Number(sec||0);
+  if(!(s>0)) return '—';
+  const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
+  if(d>0) return d+' 天';
+  if(h>0) return h+' 小时';
+  if(m>0) return m+' 分钟';
+  return '不到 1 分钟';
+}
+// 心跳断了两分钟以上，速率就是陈旧数字，显示成「—」比显示旧值更诚实
+function fresh(x){ return x.online && !x.never_reported; }
+// 负载三行：CPU / 内存 / 磁盘
+function loadCell(x){
+  if(x.never_reported) return '<span class="dim">—</span>';
+  if(!x.node.disk_pct && !x.node.cpu_pct && !x.node.mem_pct){
+    return '<span class="dim">—</span>';  // 旧版节点二进制，不上报这些
+  }
+  const rows = [['CPU',x.node.cpu_pct],['RAM',x.node.mem_pct],['硬盘',x.node.disk_pct]];
+  return `<div class="load">${rows.map(([k,v])=>{
+    const p = Math.max(0,Math.min(100,Number(v||0)));
+    const cls = p>=90?'fill err':p>=75?'fill warn':'fill';
+    return `<div class="row"><span class="lab">${k}</span>
+      <span class="track"><i class="${cls}" style="width:${p}%"></i></span>
+      <span class="num">${p}%</span></div>`;
+  }).join('')}</div>`;
+}
+// 上下行速率单元格
+function rateCell(x, which){
+  if(!fresh(x)) return '<span class="dim">—</span>';
+  return rate(which==='up' ? x.node.tx_bps : x.node.rx_bps);
+}
 // 节点的用量单元格：没上报过就是没数据，不能显示成「0 B」让人以为在正常统计
 function usageCell(x){
   const n = x.node;
@@ -550,9 +601,18 @@ function viewHome(){
   const online = S.nodes.filter(x=>x.online).length;
   const cur = S.nodes.find(x=>x.node.id===S.cur.current_node);
   const p = pct(used,quota);
+  // 实时速率：只统计还在心跳的节点，掉线的不该继续算进总带宽
+  const live = S.nodes.filter(x=>fresh(x));
+  const upBps = live.reduce((a,x)=>a+(x.node.tx_bps||0),0);
+  const downBps = live.reduce((a,x)=>a+(x.node.rx_bps||0),0);
 
   return `
   <div class="stats">
+    <div class="stat">
+      <div class="k">实时速率</div>
+      <div class="v rate" style="font-size:17px">↑ ${rate(upBps)} <span class="dim">/</span> ↓ ${rate(downBps)}</div>
+      <div class="d">上行 / 下行 · ${live.length} 台在报</div>
+    </div>
     <div class="stat">
       <div class="k">本周期总用量</div>
       <div class="v">${gb(used)}</div>
@@ -579,7 +639,7 @@ function viewHome(){
     <div class="hd"><h3>节点顺序</h3><div class="sp"></div>
       <span class="dim sm">域名指当前这台，用满自动切下一台</span></div>
     <div class="bd flush">
-      <table><thead><tr><th style="width:64px">#</th><th>节点</th><th style="width:110px">状态</th><th style="width:260px">用量</th><th style="width:120px">最近心跳</th></tr></thead><tbody>
+      <table><thead><tr><th style="width:64px">#</th><th>节点</th><th style="width:110px">状态</th><th style="width:130px">速率</th><th style="width:250px">用量</th><th style="width:110px">最近心跳</th></tr></thead><tbody>
       ${exits.length?exits.map(x=>{
         const n=x.node, isCur=S.cur.current_node===n.id;
         return `<tr>
@@ -587,10 +647,11 @@ function viewHome(){
           <td>${esc(n.name)}${isCur?' <span class="tag t-info">当前</span>':''}${n.is_backup?' <span class="tag t-warn">备用</span>':''}
             <div class="dim sm mono">${n.ip?esc(n.ip):'<span style="color:var(--warn)">IP 待上报</span>'}</div></td>
           <td>${statusTag(n.status)}</td>
+          <td class="sm rate">↑ ${rateCell(x,'up')}<br>↓ ${rateCell(x,'down')}</td>
           <td>${usageCell(x)}</td>
           <td class="sm dim">${ago(n.last_seen)}</td>
         </tr>`;
-      }).join(''):`<tr><td colspan="5" class="dim" style="text-align:center;padding:28px">还没有节点</td></tr>`}
+      }).join(''):`<tr><td colspan="6" class="dim" style="text-align:center;padding:28px">还没有节点</td></tr>`}
       </tbody></table>
     </div>
   </div>
@@ -750,12 +811,14 @@ function viewNodes(){
     <div class="bd flush">
       <table><thead><tr>
         <th style="width:38px"><input type="checkbox" onchange="selAll(this,'node')"></th>
-        <th style="width:60px">顺序</th><th>节点</th>
-        <th style="width:110px">状态</th>
-        <th style="width:230px">本周期用量</th>
-        <th style="width:85px">延迟</th>
-        <th style="width:100px">心跳</th>
-        <th style="width:160px" class="ops">操作</th>
+        <th style="width:52px">顺序</th><th>节点</th>
+        <th style="width:96px">状态</th>
+        <th style="width:90px">上行</th>
+        <th style="width:90px">下行</th>
+        <th style="width:168px">负载</th>
+        <th style="width:84px">在线</th>
+        <th style="width:200px">本周期用量</th>
+        <th style="width:150px" class="ops">操作</th>
       </tr></thead><tbody>
       ${S.nodes.length?S.nodes.map(x=>{
         const n=x.node, isCur=S.cur.current_node===n.id;
@@ -764,14 +827,17 @@ function viewNodes(){
           <td><input type="checkbox" data-sel="node" data-id="${n.id}" onchange="selOne(this)"></td>
           <td class="dim mono">${n.sort_order}</td>
           <td>${esc(n.name)}${isCur?' <span class="tag t-info">当前</span>':''}${n.is_backup?' <span class="tag t-warn">备用</span>':''}
-            <div class="dim sm mono">${n.ip?esc(n.ip):'<span style="color:var(--warn)">IP 待上报</span>'} · ${esc(n.iface||'—')} · ${esc(n.bill_mode||'—')}</div>
+            <div class="dim sm mono">${n.ip?esc(n.ip):'<span style="color:var(--warn)">IP 待上报</span>'} · ${esc(n.iface||'—')} · ${esc(n.bill_mode||'—')} · ${rttText(n.rtt)}</div>
             <div class="dim sm mono" style="opacity:.75">节点端 ${esc(n.agent_stamp||'未知（旧版二进制）')}</div></td>
           <td>${statusTag(n.status)}
             <div class="sm" style="margin-top:3px">
               <span class="dim">${x.online?'在线':'离线'}</span></div></td>
+          <td class="sm rate">${rateCell(x,'up')}</td>
+          <td class="sm rate">${rateCell(x,'down')}</td>
+          <td>${loadCell(x)}</td>
+          <td class="sm"${stale?' style="color:var(--err)"':''}>${n.first_seen?dur(Date.now()/1000-n.first_seen):'—'}
+            <div class="sm dim" title="最近一次心跳">${ago(n.last_seen)}</div></td>
           <td>${usageCell(x)}</td>
-          <td class="sm">${rttText(n.rtt)}</td>
-          <td class="sm dim"${stale?' style="color:var(--err)" title="超过 2 分钟没有心跳，用量停止更新"':''}>${ago(n.last_seen)}</td>
           <td class="ops">
             <button class="icon ghost" title="复制对接命令" onclick="nodeCmd(${n.id})">${I.copy}</button>
             <button class="icon ghost" title="编辑" onclick="dlgNode(${n.id})">${I.edit}</button>
@@ -780,7 +846,7 @@ function viewNodes(){
             <button class="icon ghost" title="删除" onclick="delNode(${n.id})">${I.trash}</button>
           </td>
         </tr>`;
-      }).join(''):`<tr><td colspan="8"><div class="empty">${I.empty}
+      }).join(''):`<tr><td colspan="10"><div class="empty">${I.empty}
         <p>还没有节点。每台机器跑同一套转发规则，按顺序轮换。</p>
         <button class="primary" onclick="dlgNode()">${I.plus} 添加节点</button></div></td></tr>`}
       </tbody></table>

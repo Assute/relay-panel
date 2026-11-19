@@ -22,6 +22,11 @@ type beatPayload struct {
 	RelayAcc    int64  `json:"relay_acc"`
 	Version     int64  `json:"version"`
 	Agent       string `json:"agent"`
+	RxBps       int64  `json:"rx_bps"`
+	TxBps       int64  `json:"tx_bps"`
+	CPUPct      int    `json:"cpu_pct"`
+	MemPct      int    `json:"mem_pct"`
+	DiskPct     int    `json:"disk_pct"`
 }
 
 func (p beatPayload) post(t *testing.T, url string) (sessionKey string) {
@@ -122,6 +127,8 @@ func TestBeatOverHTTP(t *testing.T) {
 		p := beatPayload{
 			Key: key, Fingerprint: "fp-e2e", Iface: "ens5",
 			NicAcc: nic, Version: 1, Agent: "20261119-203105",
+			// 55.68Kbps 上行 / 104.32Kbps 下行（字节/秒），跟截图里一个量级
+			TxBps: 6960, RxBps: 13040, CPUPct: 7, MemPct: 35, DiskPct: 58,
 		}
 		if sk := p.post(t, srv.URL); sk != "" {
 			key = sk
@@ -148,6 +155,17 @@ func TestBeatOverHTTP(t *testing.T) {
 
 	if got := store.Node(n.ID).AgentStamp; got != "20261119-203105" {
 		t.Fatalf("面板应记下节点端构建标识，实际 %q", got)
+	}
+	// 实时观测值：速率/负载/首次心跳时间都要原样落库，前端才能显示
+	live := *store.Node(n.ID)
+	if live.TxBps != 6960 || live.RxBps != 13040 {
+		t.Fatalf("速率没落库: tx=%d rx=%d", live.TxBps, live.RxBps)
+	}
+	if live.CPUPct != 7 || live.MemPct != 35 || live.DiskPct != 58 {
+		t.Fatalf("负载没落库: cpu=%d mem=%d disk=%d", live.CPUPct, live.MemPct, live.DiskPct)
+	}
+	if live.FirstSeen == 0 {
+		t.Fatal("首次心跳时间没记，面板上「在线 X 天」会一直是空的")
 	}
 
 	// 手动清零

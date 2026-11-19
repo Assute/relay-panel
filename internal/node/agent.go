@@ -31,6 +31,11 @@ type beatReq struct {
 	RelayAcc    int64  `json:"relay_acc"`
 	Version     int64  `json:"version"`
 	Agent       string `json:"agent"` // 构建标识，面板上直接显示
+	RxBps       int64  `json:"rx_bps"`
+	TxBps       int64  `json:"tx_bps"`
+	CPUPct      int    `json:"cpu_pct"`
+	MemPct      int    `json:"mem_pct"`
+	DiskPct     int    `json:"disk_pct"`
 }
 
 type beatResp struct {
@@ -50,6 +55,7 @@ type Agent struct {
 	ver   atomic.Int64
 	hc    *http.Client
 	fp    string
+	sys   SysSampler
 }
 
 func NewAgent(c *Config, m *NicMeter, f *Forwarder) *Agent {
@@ -64,6 +70,16 @@ func NewAgent(c *Config, m *NicMeter, f *Forwarder) *Agent {
 }
 
 func (a *Agent) Run() {
+	// 速率按 3 秒采样才有「实时」的感觉；心跳 15 秒一次，中间全靠这个补齐。
+	// 顺带把账本采样频率提上来，计数器中途归零丢的量也更少。
+	go func() {
+		t := time.NewTicker(3 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			a.meter.Sample()
+		}
+	}()
+
 	backoff := time.Second
 	for {
 		err := a.loop()
@@ -105,14 +121,21 @@ func (a *Agent) loop() error {
 }
 
 func (a *Agent) beat() error {
+	nicAcc := a.meter.Sample()
+	rxBps, txBps := a.meter.Rates()
 	req := beatReq{
 		Key:         a.key,
 		Fingerprint: a.fp,
 		Iface:       a.meter.Iface(),
-		NicAcc:      int64(a.meter.Sample()),
+		NicAcc:      int64(nicAcc),
 		RelayAcc:    a.fwd.BytesRead(),
 		Version:     a.ver.Load(),
 		Agent:       BuildStamp,
+		RxBps:       rxBps,
+		TxBps:       txBps,
+		CPUPct:      a.sys.CPU(),
+		MemPct:      MemPct(),
+		DiskPct:     DiskPct(),
 	}
 	body, _ := json.Marshal(req)
 	httpReq, err := http.NewRequest("POST", a.cnf.Panel+"/agent/beat", bytes.NewReader(body))

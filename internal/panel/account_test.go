@@ -25,7 +25,7 @@ func newTestStore(t *testing.T) (*Store, int64) {
 }
 
 func beat(s *Store, id, nic int64) Node {
-	s.AcceptBeat(id, nic, 0, 1, "test-stamp")
+	s.AcceptBeat(Beat{NodeID: id, NicAcc: nic, Version: 1, Agent: "test-stamp"})
 	return *s.Node(id)
 }
 

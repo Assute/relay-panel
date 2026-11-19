@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // NicCounters 读 /proc/net/dev，返回指定网卡的累计接收/发送字节。
@@ -72,6 +73,12 @@ type NicMeter struct {
 	acc   uint64
 	ready bool // 基准是否已对齐；换网卡/换口径后置 false
 	state string
+
+	// 实时速率用：上一次的原始计数器值和采样时刻。
+	// 累计量和速率是两回事，速率永远取 rx/tx 原始值，不受计费口径影响。
+	lastRx, lastTx uint64
+	lastAt         time.Time
+	rxBps, txBps   int64
 }
 
 // PickBusiestIface 挑当前流量最大的非回环网卡。
@@ -132,6 +139,9 @@ func (n *NicMeter) SetIface(iface, mode string) {
 		n.iface = iface
 		n.base = 0
 		n.ready = false // 换网卡，下次采样只对齐
+		n.lastAt = time.Time{} // 速率基准也一起重来，否则第一次差值会算成几 MB/s
+		n.lastRx, n.lastTx = 0, 0
+		n.rxBps, n.txBps = 0, 0
 	}
 	// 改计费口径会让 raw 突变（both -> tx 时砍掉一半），
 	// base 和 acc 都归零重新起算，否则下一次 Sample 会把整个
@@ -167,6 +177,8 @@ func (n *NicMeter) Sample() uint64 {
 	if err != nil {
 		return n.acc
 	}
+	n.updateRate(rx, tx)
+
 	var raw uint64
 	switch n.mode {
 	case "tx":
@@ -193,6 +205,33 @@ func (n *NicMeter) Sample() uint64 {
 	}
 	n.base = raw
 	return n.acc
+}
+
+// updateRate 按两次采样之间的时间差算实时速率（字节/秒）。
+// 调用方必须持有 n.mu。计数器归零时差值会变负，直接按 0 处理。
+func (n *NicMeter) updateRate(rx, tx uint64) {
+	now := time.Now()
+	if !n.lastAt.IsZero() {
+		if d := now.Sub(n.lastAt).Seconds(); d >= 0.5 {
+			n.rxBps = rateOf(rx, n.lastRx, d)
+			n.txBps = rateOf(tx, n.lastTx, d)
+		}
+	}
+	n.lastRx, n.lastTx, n.lastAt = rx, tx, now
+}
+
+func rateOf(cur, prev uint64, seconds float64) int64 {
+	if cur < prev {
+		return 0 // 计数器归零 / 换了网卡
+	}
+	return int64(float64(cur-prev) / seconds)
+}
+
+// Rates 返回最近一次采样算出来的上下行速率（字节/秒），面板显示用。
+func (n *NicMeter) Rates() (rxBps, txBps int64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.rxBps, n.txBps
 }
 
 func (n *NicMeter) Restore() {
