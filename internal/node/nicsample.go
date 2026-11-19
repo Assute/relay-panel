@@ -146,12 +146,17 @@ func (n *NicMeter) SetIface(iface, mode string) {
 	// 改计费口径会让 raw 突变（both -> tx 时砍掉一半），
 	// base 和 acc 都归零重新起算，否则下一次 Sample 会把整个
 	// tx 累计值当成增量加进去，用量瞬间多算几十 GB。
-	// 面板侧的 UsedBytes 是独立累加的，不受影响。
-	if mode != "" && mode != n.mode {
-		n.mode = mode
+	//
+	// 但 n.mode 为空表示「刚启动、还不知道上次用的是哪个口径」
+	// （老版本 state 文件没记口径）。这种只补上口径，不能清 acc——
+	// 否则每次重启都会被当成「用户改了口径」，历史用量全丢。
+	if mode != "" && n.mode != "" && mode != n.mode {
 		n.base = 0
 		n.acc = 0
 		n.ready = false
+	}
+	if mode != "" {
+		n.mode = mode
 	}
 }
 
@@ -161,11 +166,18 @@ func (n *NicMeter) Iface() string {
 	return n.iface
 }
 
-// Mode 返回当前计费口径（both / tx / rx）
+// Mode 返回当前计费口径（both / tx / rx），空表示还没确定
 func (n *NicMeter) Mode() string {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.mode
+}
+
+// Acc 返回本进程累计的字节数，也就是落盘的那个值。
+func (n *NicMeter) Acc() uint64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.acc
 }
 
 // Sample 返回单调递增的累计字节数
@@ -234,26 +246,49 @@ func (n *NicMeter) Rates() (rxBps, txBps int64) {
 	return n.rxBps, n.txBps
 }
 
+// Restore 从磁盘恢复累计值，以及上次用的计费口径。
+//
+// 口径必须一起恢复：进程重启时 NewNicMeter 把 mode 初始化成 "both"，
+// 而面板下发的可能是 "tx"——SetIface 看到不一样就当成「用户改了口径」，
+// 直接把 acc 清零。结果就是每重启一次丢一次历史用量，
+// 面板上表现为「更新完流量被清零了」。
 func (n *NicMeter) Restore() {
 	b, err := os.ReadFile(n.state)
 	if err != nil {
 		return
 	}
-	if v, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64); err == nil {
-		n.mu.Lock()
-		n.acc, n.base = v, 0
-		n.ready = false
-		n.mu.Unlock()
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	v, err := strconv.ParseUint(strings.TrimSpace(lines[0]), 10, 64)
+	if err != nil {
+		return
 	}
+	// 老格式只有一行数字，没有口径记录：留空表示「未知」，
+	// 下一次 SetIface 只补口径，不清 acc。
+	mode := ""
+	if len(lines) > 1 {
+		mode = strings.TrimSpace(lines[1])
+	}
+	n.mu.Lock()
+	n.acc, n.base = v, 0
+	n.mode = mode
+	n.ready = false
+	n.mu.Unlock()
 }
 
+// Persist 把累计值和计费口径一起落盘。
+// 格式：第一行字节数，第二行口径（tx/rx/both）。
 func (n *NicMeter) Persist() error {
 	n.mu.Lock()
 	v := n.acc
+	mode := n.mode
 	path := n.state
 	n.mu.Unlock()
 	_ = os.MkdirAll(dirOf(path), 0o755)
-	return os.WriteFile(path, []byte(strconv.FormatUint(v, 10)), 0o600)
+	body := strconv.FormatUint(v, 10)
+	if mode != "" {
+		body += "\n" + mode
+	}
+	return os.WriteFile(path, []byte(body), 0o600)
 }
 
 func dirOf(p string) string {
