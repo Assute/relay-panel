@@ -30,6 +30,8 @@ func main() {
 	meter := node.NewNicMeter(cnf.Iface, "", cnf.StateDir)
 	meter.Restore()
 
+	log.Printf("节点端版本 %s", node.BuildStamp)
+
 	// 网卡自检：配错了直接说清楚，别让人瞎猜
 	if _, _, err := node.NicCounters(meter.Iface()); err != nil {
 		if auto := node.PickBusiestIface(); auto != "" && auto != meter.Iface() {
