@@ -8,10 +8,10 @@
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Assute/relay-panel/main/install/install-panel.sh) \
-  --port 8080 --url http://你的服务器IP:8080
+  --port 3070 --url http://你的服务器IP:3070
 ```
 
-脚本会自动识别架构、下载二进制、写配置、生成随机密码、装 systemd、启动，最后把地址和密码打印出来。
+脚本会自动识别架构、下载二进制、写配置、设账号密码、装 systemd、启动，最后把地址和账号密码打印出来。
 
 国内机器访问 `raw.githubusercontent.com` 超时会自动切 jsDelivr CDN。
 
@@ -28,7 +28,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Assute/relay-panel/main/inst
 tar xzf relay-panel-v1.0-linux-amd64.tar.gz
 cd relay-panel-v1.0
 chmod +x install-panel.sh
-bash install-panel.sh --port 8080 --url http://你的服务器IP:8080
+bash install-panel.sh --port 3070 --url http://你的服务器IP:3070
 ```
 
 安装脚本会输出：
@@ -36,21 +36,21 @@ bash install-panel.sh --port 8080 --url http://你的服务器IP:8080
 ```
 ================================================
   中转面板已启动
-  地址   : http://<本机IP>:8080
-  账号   : admin
-  密码   : xxxxxxxxxxxx
+  地址   : http://<本机IP>:3070
+  账号   : 123456
+  密码   : 123456
 ================================================
 ```
 
-**密码只显示这一次，记下来。**
+**默认账号密码都是 `123456`。**
 
 ### 参数说明
 
 | 参数 | 说明 | 默认 |
 |---|---|---|
-| `--port 8080` | 监听端口，只绑 127.0.0.1 | 8080 |
-| `--listen 0.0.0.0:8080` | 直接对外监听（不建议，建议走反代） | — |
-| `--url http://1.2.3.4:8080` | **一键命令里的地址，必填外网可达** | 自动推测 |
+| `--port 3070` | 监听端口，只绑 127.0.0.1 | 3070 |
+| `--listen 0.0.0.0:3070` | 直接对外监听（不建议，建议走反代） | — |
+| `--url http://1.2.3.4:3070` | **一键命令里的地址，必填外网可达** | 自动推测 |
 | `--dir /opt/relay-panel` | 安装目录 | /opt/relay-panel |
 | `--uninstall` | 卸载服务（保留数据） | — |
 
@@ -58,14 +58,14 @@ bash install-panel.sh --port 8080 --url http://你的服务器IP:8080
 
 ```bash
 systemctl status relay-panel
-curl -s http://127.0.0.1:8080/ | head -c 100
+curl -s http://127.0.0.1:3070/ | head -c 100
 ```
 
 ---
 
 ## 二、配面板
 
-浏览器打开 `http://服务器IP:8080`，用 `admin` / 刚才的密码登录。
+浏览器打开 `http://服务器IP:3070`，用 `123456` / `123456` 登录。
 
 ### 1. 设置页（必须先做）
 
@@ -236,7 +236,7 @@ journalctl -u relay-node -f
 
 ## 五、反代（可选，推荐）
 
-面板默认只监听 `127.0.0.1:8080`，用 nginx 反代出去：
+面板默认只监听 `127.0.0.1:3070`，用 nginx 反代出去：
 
 ```nginx
 server {
@@ -249,7 +249,7 @@ server {
     client_max_body_size 100m;
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:3070;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

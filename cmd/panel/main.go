@@ -28,7 +28,8 @@ func main() {
 	if listen != nil && *listen != "" {
 		cnf.Listen = *listen
 	}
-	if fresh {
+	// -passwd 模式会把密码覆盖掉，这时不该再打印随机密码误导人
+	if fresh && *passwd == "" {
 		log.Printf("配置文件已生成: %s", *cfgPath)
 		log.Printf("========================================")
 		log.Printf("  管理员账号: %s", cnf.AdminUser)

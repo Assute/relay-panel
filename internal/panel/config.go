@@ -30,10 +30,10 @@ type Config struct {
 
 func DefaultConfig() *Config {
 	return &Config{
-		Listen:    "127.0.0.1:8080",
+		Listen:    "127.0.0.1:3070",
 		DB:        "data.json",
-		AdminUser: "admin",
-		PublicURL: "http://127.0.0.1:8080",
+		AdminUser: "123456",
+		PublicURL: "http://127.0.0.1:3070",
 	}
 }
 

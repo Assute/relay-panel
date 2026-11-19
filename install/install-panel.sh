@@ -4,16 +4,20 @@
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Assute/relay-panel/main/install/install-panel.sh)
 #
 # 可选参数：
-#   --port 8080                  监听端口（默认只绑 127.0.0.1）
-#   --listen 0.0.0.0:8080        直接对外监听
-#   --url  http://1.2.3.4:8080   一键命令里的外网地址（强烈建议指定）
+#   --port 3070                  监听端口（默认只绑 127.0.0.1）
+#   --listen 0.0.0.0:3070        直接对外监听
+#   --url  http://1.2.3.4:3070   一键命令里的外网地址（默认自动探测公网 IP）
+#   --user 123456                管理员账号
+#   --pass 123456                管理员密码
 #   --dir  /opt/relay-panel      安装目录
 #   --uninstall                  卸载服务（保留数据）
 set -euo pipefail
 
 APP_DIR="/opt/relay-panel"
-LISTEN="127.0.0.1:8080"
+LISTEN="127.0.0.1:3070"
 PUBLIC_URL=""
+ADMIN_USER="123456"
+ADMIN_PASS="123456"
 UNINSTALL=0
 REPO_BASES=(
   "https://cdn.jsdelivr.net/gh/Assute/relay-panel@main/dl"
@@ -25,9 +29,11 @@ while [ $# -gt 0 ]; do
     --port)      LISTEN="127.0.0.1:$2"; shift 2 ;;
     --listen)    LISTEN="$2"; shift 2 ;;
     --url)       PUBLIC_URL="$2"; shift 2 ;;
+    --user)      ADMIN_USER="$2"; shift 2 ;;
+    --pass)      ADMIN_PASS="$2"; shift 2 ;;
     --dir)       APP_DIR="$2"; shift 2 ;;
     --uninstall) UNINSTALL=1; shift ;;
-    -h|--help)   sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "未知参数: $1" >&2; exit 1 ;;
   esac
 done
@@ -35,6 +41,7 @@ done
 BIN="$APP_DIR/panel"
 CONF="$APP_DIR/config.json"
 SVC="/etc/systemd/system/relay-panel.service"
+PORT="${LISTEN##*:}"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
@@ -69,6 +76,24 @@ fetch() {
     fi
   done
   return 1
+}
+
+# 公网 IP：优先本地路由，拿到内网地址再问外部服务
+guess_ip() {
+  local ip=""
+  ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1);exit}}')
+  [ -z "$ip" ] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  case "$ip" in
+    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|127.*|"")
+      local ext=""
+      ext=$(curl -fsS --connect-timeout 5 --max-time 8 https://api.ipify.org 2>/dev/null || true)
+      if [ -z "$ext" ]; then
+        ext=$(curl -fsS --connect-timeout 5 --max-time 8 https://ipv4.icanhazip.com 2>/dev/null | tr -d '\r\n' || true)
+      fi
+      [ -n "$ext" ] && ip="$ext"
+      ;;
+  esac
+  echo "$ip"
 }
 
 # ---------- 1. 主程序 ----------
@@ -108,21 +133,25 @@ echo "      已就绪: $(ls "$APP_DIR/dl" 2>/dev/null | tr '\n' ' ')"
 echo "[2/5] 写配置 $CONF"
 KEEP=0
 if [ -f "$CONF" ]; then
-  echo "      配置已存在，保留原文件"
+  echo "      配置已存在，保留原有设置"
   KEEP=1
+  # 重装也同步账号名
+  sed -i "s/\"admin_user\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"admin_user\": \"$ADMIN_USER\"/" "$CONF"
+  # 沿用配置里的外网地址
+  if [ -z "$PUBLIC_URL" ]; then
+    PUBLIC_URL=$(sed -n 's/.*"public_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONF" | head -1)
+  fi
 else
   if [ -z "$PUBLIC_URL" ]; then
-    IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1);exit}}')
-    [ -z "$IP" ] && IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-    [ -z "$IP" ] && IP="127.0.0.1"
-    PUBLIC_URL="http://$IP:${LISTEN##*:}"
-    echo "      未指定 --url，推测为 $PUBLIC_URL"
+    IP=$(guess_ip)
+    PUBLIC_URL="http://$IP:$PORT"
+    echo "      未指定 --url，探测到公网地址 $PUBLIC_URL"
   fi
   cat > "$CONF" <<EOF
 {
   "listen": "$LISTEN",
   "db": "$APP_DIR/data.json",
-  "admin_user": "admin",
+  "admin_user": "$ADMIN_USER",
   "admin_pass_hash": "",
   "cloudflare_token": "",
   "public_url": "$PUBLIC_URL",
@@ -133,17 +162,11 @@ EOF
   chmod 600 "$CONF"
 fi
 
-# ---------- 3. 密码 ----------
-echo "[3/5] 设置管理员密码"
-PASSWD=""
-if [ "$KEEP" = "0" ]; then
-  set +o pipefail
-  PASSWD=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | cut -c1-12)
-  set -o pipefail
-  if ! "$BIN" -config "$CONF" -passwd "$PASSWD" >/dev/null 2>&1; then
-    echo "      设置密码失败，稍后用 journalctl -u relay-panel 查看初始密码" >&2
-    PASSWD=""
-  fi
+# ---------- 3. 账号密码 ----------
+echo "[3/5] 设置管理员账号密码"
+if ! "$BIN" -config "$CONF" -passwd "$ADMIN_PASS" >/dev/null 2>&1; then
+  echo "      设置密码失败，稍后用 journalctl -u relay-panel 查看初始密码" >&2
+  ADMIN_PASS=""
 fi
 
 # ---------- 4. systemd ----------
@@ -177,14 +200,19 @@ if ! systemctl is-active --quiet relay-panel; then
   exit 1
 fi
 
-PORT="${LISTEN##*:}"
 echo ""
 echo "================================================"
 echo "  中转面板已启动"
-echo "  地址   : http://<本机IP>:$PORT"
-echo "  账号   : admin"
-if [ -n "$PASSWD" ]; then
-  echo "  密码   : $PASSWD"
+echo "  地址   : ${PUBLIC_URL:-http://<服务器公网IP>:$PORT}"
+case "$LISTEN" in
+  127.0.0.1:*|localhost:*)
+    echo "  监听   : $LISTEN（只绑本机，外部访问需 nginx 反代）" ;;
+  *)
+    echo "  监听   : $LISTEN" ;;
+esac
+echo "  账号   : $ADMIN_USER"
+if [ -n "$ADMIN_PASS" ]; then
+  echo "  密码   : $ADMIN_PASS"
 else
   echo "  密码   : （沿用原有配置）"
 fi
@@ -192,8 +220,8 @@ echo "  数据   : $APP_DIR/data.json"
 echo "================================================"
 echo ""
 echo "下一步："
-echo "  1. 浏览器打开面板登录（只绑 127.0.0.1 的话先配 nginx 反代）"
-echo "  2. 「设置」填 Public URL —— 一键命令用的地址，必须节点能访问"
+echo "  1. 浏览器打开 $PUBLIC_URL 登录"
+echo "  2. 「设置」确认 Public URL 是节点能访问到的地址（一键命令靠它）"
 echo "  3. 「设置」填 Cloudflare Token，点测试"
 echo "  4. 新建分组，填域名和 Zone，点测试"
 echo "  5. 添加节点，复制命令到节点机执行"
