@@ -26,6 +26,7 @@ type agentConfig struct {
 type beatReq struct {
 	Key         string `json:"key"`
 	Fingerprint string `json:"fingerprint"`
+	Iface       string `json:"iface"`
 	NicAcc      int64  `json:"nic_acc"`
 	RelayAcc    int64  `json:"relay_acc"`
 	Version     int64  `json:"version"`
@@ -106,6 +107,7 @@ func (a *Agent) beat() error {
 	req := beatReq{
 		Key:         a.key,
 		Fingerprint: a.fp,
+		Iface:       a.meter.Iface(),
 		NicAcc:      int64(a.meter.Sample()),
 		RelayAcc:    a.fwd.BytesRead(),
 		Version:     a.ver.Load(),

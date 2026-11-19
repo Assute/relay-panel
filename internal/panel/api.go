@@ -861,6 +861,7 @@ func (a *API) testGroupDNS(w http.ResponseWriter, r *http.Request) {
 type beatReq struct {
 	Key         string `json:"key"`
 	Fingerprint string `json:"fingerprint"`
+	Iface       string `json:"iface"`
 	NicAcc      int64  `json:"nic_acc"`
 	RelayAcc    int64  `json:"relay_acc"`
 	Version     int64  `json:"version"`
@@ -931,6 +932,14 @@ func (a *API) agentBeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.syncNodeIP(n, r)
+	// 节点把实际在用的网卡报上来，覆盖面板里可能填错的那个，
+	// 否则每轮心跳都会把错的网卡推下去，node 端反复切换、基准反复重置，
+	// 结果就是流量一点都不累加。
+	if in.Iface != "" && in.Iface != n.Iface {
+		log.Printf("node %d (%s): 网卡 %q -> %q（节点上报）", n.ID, n.Name, n.Iface, in.Iface)
+		a.store.SetNodeIface(n.ID, in.Iface)
+		n.Iface = in.Iface
+	}
 	resp.Iface = n.Iface
 	resp.BillMode = n.BillMode
 

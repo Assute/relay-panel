@@ -627,6 +627,19 @@ func (s *Store) AcceptBeat(nodeID, nicAcc, relayAcc, ver int64) (wantVersion int
 }
 
 // SetStatus / SetCurrentNode 等小操作
+// SetNodeIface 记录节点实际在用的网卡，避免面板反复下发错误配置
+func (s *Store) SetNodeIface(nodeID int64, iface string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.db.Nodes {
+		if s.db.Nodes[i].ID == nodeID {
+			s.db.Nodes[i].Iface = iface
+			_ = s.save()
+			return
+		}
+	}
+}
+
 // SetRTTs 批量更新延迟，只落盘一次
 // SetNodeIP 更新节点公网 IP，返回旧值
 func (s *Store) SetNodeIP(nodeID int64, ip string) string {

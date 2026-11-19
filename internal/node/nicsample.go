@@ -70,6 +70,7 @@ type NicMeter struct {
 	mode  string // tx | rx | both
 	base  uint64
 	acc   uint64
+	ready bool // 基准是否已对齐；换网卡/换口径后置 false
 	state string
 }
 
@@ -129,7 +130,8 @@ func (n *NicMeter) SetIface(iface, mode string) {
 	defer n.mu.Unlock()
 	if iface != "" && iface != n.iface {
 		n.iface = iface
-		n.base = 0 // 换网卡，重新对齐
+		n.base = 0
+		n.ready = false // 换网卡，下次采样只对齐
 	}
 	// 改计费口径会让 raw 突变（both -> tx 时砍掉一半），
 	// base 和 acc 都归零重新起算，否则下一次 Sample 会把整个
@@ -139,6 +141,7 @@ func (n *NicMeter) SetIface(iface, mode string) {
 		n.mode = mode
 		n.base = 0
 		n.acc = 0
+		n.ready = false
 	}
 }
 
@@ -174,6 +177,15 @@ func (n *NicMeter) Sample() uint64 {
 		raw = rx + tx
 	}
 
+	// 首次采样、刚换网卡、刚换口径：只对齐基准，绝不累加。
+	// 否则会把网卡开机以来的累计值整块算进本周期用量 —— 表现为
+	// 「面板用量每秒涨几 GB」，而且每轮心跳都会重来一次。
+	if !n.ready {
+		n.base = raw
+		n.ready = true
+		return n.acc
+	}
+
 	if raw >= n.base {
 		n.acc += raw - n.base
 	} else {
@@ -191,6 +203,7 @@ func (n *NicMeter) Restore() {
 	if v, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64); err == nil {
 		n.mu.Lock()
 		n.acc, n.base = v, 0
+		n.ready = false
 		n.mu.Unlock()
 	}
 }
