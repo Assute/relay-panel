@@ -91,8 +91,12 @@ detect_arch() {
 
 fetch() {
   local name="$1" dest="$2"
+  # 带时间戳绕过 CDN 缓存：raw 和 jsDelivr 对同名文件都会缓存数小时，
+  # 不加这一行，推送新版本后仍会下到旧二进制
+  local stamp
+  stamp=$(date +%s)
   for base in "${REPO_BASES[@]}"; do
-    if curl -fsSL --connect-timeout 10 --max-time 300 "$base/$name" -o "$dest" 2>/dev/null; then
+    if curl -fsSL --connect-timeout 10 --max-time 300 "$base/$name?t=$stamp" -o "$dest" 2>/dev/null; then
       if [ -s "$dest" ]; then return 0; fi
     fi
   done
