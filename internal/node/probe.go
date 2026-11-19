@@ -9,6 +9,7 @@
 package node
 
 import (
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -139,11 +140,17 @@ func (p *Prober) record(ok bool, rtt time.Duration, errMsg string) {
 	p.done = true
 	p.at = time.Now().Unix()
 	if ok {
+		// 之前是不通、现在通了：打一行，方便在 journalctl 里对上时间点
+		wasBad := p.fails > 0 || !p.ok
 		p.ok, p.fails, p.rttMs, p.errMsg = true, 0, rtt.Milliseconds(), ""
+		if wasBad {
+			log.Printf("连通性恢复: %s %dms", p.target, rtt.Milliseconds())
+		}
 		return
 	}
 	p.ok, p.rttMs, p.errMsg = false, 0, errMsg
 	p.fails++
+	log.Printf("连通性探测失败 %d/%d: %s (%s)", p.fails, probeMaxFails, p.target, errMsg)
 }
 
 func dialTCP(addr string, timeout time.Duration) (time.Duration, error) {
