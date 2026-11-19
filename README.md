@@ -68,25 +68,94 @@ GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o bin/node-linux-ar
 GOOS=linux GOARCH=arm   go build -trimpath -ldflags="-s -w" -o bin/node-linux-arm   ./cmd/node
 ```
 
-## 部署
+## 一键安装
 
-详细步骤见 [install/DEPLOY.md](install/DEPLOY.md)。
-
-快速开始：
+面板装在一台能连外网的机器上，1 核 1G 够用。只要 root，不用装任何依赖。
 
 ```bash
-# 面板机
-./bin/panel -config /opt/relay-panel/config.json
-
-# 或者用安装脚本
-bash install/install-panel.sh --port 8080 --url http://你的IP:8080
+bash <(curl -fsSL https://raw.githubusercontent.com/Assute/relay-panel/main/install/install-panel.sh)
 ```
 
-节点机：
+指定端口和外网地址（推荐，省得装完再进面板改）：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Assute/relay-panel/main/install/install-panel.sh) \
+  --port 8080 --url http://你的服务器IP:8080
+```
+
+脚本会：识别 CPU 架构 → 下载对应二进制 → 写配置 → 生成随机密码 → 装 systemd → 启动。
+
+装完终端直接打印：
+
+```
+================================================
+  中转面板已启动
+  地址   : http://<本机IP>:8080
+  账号   : admin
+  密码   : xxxxxxxxxxxx
+================================================
+```
+
+**密码只显示这一次。**
+
+> 国内机器访问 `raw.githubusercontent.com` 常常超时。脚本内置 jsDelivr 备用源，会自动切换。两个源都不通的话，可以直接拉包：
+>
+> ```bash
+> curl -fL -o panel https://cdn.jsdelivr.net/gh/Assute/relay-panel@main/dl/panel-linux-amd64
+> curl -fL -o install-panel.sh https://cdn.jsdelivr.net/gh/Assute/relay-panel@main/install/install-panel.sh
+> chmod +x panel install-panel.sh && bash install-panel.sh
+> ```
+
+### 常用参数
+
+| 参数 | 说明 | 默认 |
+|---|---|---|
+| `--port 8080` | 监听端口，只绑 127.0.0.1 | 8080 |
+| `--listen 0.0.0.0:8080` | 直接对外监听 | — |
+| `--url http://1.2.3.4:8080` | 一键命令里的外网地址 | 自动推测 |
+| `--dir /opt/relay-panel` | 安装目录 | /opt/relay-panel |
+| `--uninstall` | 卸载服务，保留数据 | — |
+
+### 装完检查
+
+```bash
+systemctl status relay-panel
+journalctl -u relay-panel -f
+curl -s http://127.0.0.1:8080/ | head -c 80
+```
+
+## 节点接入
+
+面板里「添加节点」后会生成一条命令，复制到节点机上用 root 执行：
 
 ```bash
 curl -fsSL http://你的面板/i.sh | bash -s -- --panel=http://你的面板 --token=xxxxx
 ```
+
+节点脚本会：下载对应架构二进制 → 写配置 → 装 systemd → 启动 → 注册。
+
+装完回面板刷新，节点变绿即成功。
+
+```bash
+systemctl status relay-node
+journalctl -u relay-node -f
+```
+
+## 手动部署
+
+不想用脚本的话：
+
+```bash
+# 面板机
+mkdir -p /opt/relay-panel/dl
+install -m755 panel /opt/relay-panel/panel
+cp node-linux-* /opt/relay-panel/dl/
+/opt/relay-panel/panel -config /opt/relay-panel/config.json   # 首次运行生成配置和密码
+```
+
+systemd 单元见 [install/panel.service](install/panel.service)。
+
+完整部署文档（Cloudflare 配置、反代、排错）见 [install/DEPLOY.md](install/DEPLOY.md)。
 
 ## 目录
 

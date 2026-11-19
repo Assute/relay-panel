@@ -1,25 +1,25 @@
-# 中转面板 · 部署包
-
-多台 VPS 拼流量池，一个面板统一管：分组、配额、一键接入、用满自动切 DNS。
+# 中转面板 · 部署文档
 
 ---
 
-## 包里有什么
+## 最省事：一键安装
 
-```
-panel               面板主程序（Linux amd64）
-node-linux-amd64    节点端（x86_64）
-node-linux-arm64    节点端（ARM64，甲骨文/树莓派）
-node-linux-arm      节点端（ARMv7）
-install-panel.sh    一键安装脚本
-relay-panel.service systemd 服务文件（脚本会自动生成，这里是备份）
-README.md           本文件
+面板机上用 root 跑一条命令，全程自动：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Assute/relay-panel/main/install/install-panel.sh) \
+  --port 8080 --url http://你的服务器IP:8080
 ```
 
-面板是单二进制，不带任何外部依赖（不需要 MySQL、Redis、nginx）。
+脚本会自动识别架构、下载二进制、写配置、生成随机密码、装 systemd、启动，最后把地址和密码打印出来。
+
+国内机器访问 `raw.githubusercontent.com` 超时会自动切 jsDelivr CDN。
+
+装完直接从下面「二、配面板」开始。
+
+下面「一、装面板」是从发布包手动安装的完整步骤，两种方式选一种即可。
 
 ---
-
 ## 一、装面板
 
 面板要装在一台**能连外网**的机器上，1 核 1G 足够。
