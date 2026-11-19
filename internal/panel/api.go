@@ -5,6 +5,8 @@ package panel
 import (
 	"errors"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -306,10 +308,11 @@ func (a *API) createNode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
 		return
 	}
-	if in.Name == "" || in.IP == "" {
-		writeJSON(w, 400, map[string]string{"error": "名称和 IP 必填"})
+	if in.Name == "" {
+		writeJSON(w, 400, map[string]string{"error": "名称必填"})
 		return
 	}
+	// IP 可以留空：节点首次心跳时面板会从连接里识别并自动填入
 	order := 0
 	for _, n := range a.store.Nodes(gid) {
 		if n.SortOrder >= order {
@@ -432,6 +435,38 @@ func (a *API) resetNode(w http.ResponseWriter, r *http.Request) {
 }
 
 // promoteNode 手工切到指定节点，无视串行顺序
+// syncNodeIP 用心跳连接的来源地址更新节点公网 IP。
+// 只接受 IPv4（DNS A 记录用）；IPv6 连接保留原配置不动。
+func (a *API) syncNodeIP(n *Node, r *http.Request) {
+	pub := clientIP(r)
+	ip := net.ParseIP(pub)
+	if ip == nil || ip.To4() == nil {
+		return
+	}
+	if pub == n.IP {
+		return
+	}
+	old := a.store.SetNodeIP(n.ID, pub)
+
+	if old == "" {
+		log.Printf("node %d (%s): 自动识别公网 IP %s", n.ID, n.Name, pub)
+		return
+	}
+
+	log.Printf("node %d (%s): 公网 IP %s -> %s", n.ID, n.Name, old, pub)
+	a.store.Alert(n.GroupID, n.ID, "warn",
+		"节点 "+n.Name+" 公网 IP 变更: "+old+" → "+pub)
+
+	// 正好是当前节点，DNS 立刻跟上，别让域名指着旧地址
+	if g := a.store.Group(n.GroupID); g != nil && g.CurrentNode == n.ID {
+		if err := a.dns.SetA(g, pub, g.DNSTTL); err != nil {
+			a.store.Alert(n.GroupID, n.ID, "error", "IP 变更后 DNS 更新失败: "+err.Error())
+			log.Printf("group %d: IP 变更后 DNS 更新失败: %v", g.ID, err)
+		} else {
+			log.Printf("group %d: DNS 已跟随 IP 变更指向 %s", g.ID, pub)
+		}
+	}
+}
 func (a *API) promoteNode(w http.ResponseWriter, r *http.Request) {
 	n := a.store.Node(pathID(r, "id"))
 	if n == nil {
@@ -757,6 +792,27 @@ type beatResp struct {
 	Config     *agentConfig `json:"config,omitempty"`
 }
 
+// clientIP 从请求里取对端真实公网 IP，处理反代和 Cloudflare
+func clientIP(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {
+		return v
+	}
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		if i := strings.IndexByte(v, ','); i > 0 {
+			return strings.TrimSpace(v[:i])
+		}
+		return strings.TrimSpace(v)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func (a *API) agentBeat(w http.ResponseWriter, r *http.Request) {
 	var in beatReq
 	if err := readJSON(r, &in); err != nil {
@@ -779,6 +835,7 @@ func (a *API) agentBeat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 410, beatResp{OK: false, Err: "node_gone"})
 		return
 	}
+	a.syncNodeIP(n, r)
 	resp.Iface = n.Iface
 	resp.BillMode = n.BillMode
 

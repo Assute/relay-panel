@@ -554,7 +554,7 @@ function viewHome(){
         return `<tr>
           <td class="dim mono">${n.sort_order}</td>
           <td>${esc(n.name)}${isCur?' <span class="tag t-info">当前</span>':''}${n.is_backup?' <span class="tag t-warn">备用</span>':''}
-            <div class="dim sm mono">${esc(n.ip)}</div></td>
+            <div class="dim sm mono">${n.ip?esc(n.ip):'<span style="color:var(--warn)">IP 待上报</span>'}</div></td>
           <td>${statusTag(n.status)}</td>
           <td>${gb(n.used_bytes)} / ${gb(n.quota_bytes)}
             <div class="sm dim">${pct(n.used_bytes,n.quota_bytes).toFixed(1)}%</div>${bar(n.used_bytes,n.quota_bytes)}</td>
@@ -663,7 +663,7 @@ function viewNodes(){
           <td><input type="checkbox" data-sel="node" data-id="${n.id}" onchange="selOne(this)"></td>
           <td class="dim mono">${n.sort_order}</td>
           <td>${esc(n.name)}${isCur?' <span class="tag t-info">当前</span>':''}${n.is_backup?' <span class="tag t-warn">备用</span>':''}
-            <div class="dim sm mono">${esc(n.ip)} · ${esc(n.iface)} · ${esc(n.bill_mode)}</div></td>
+            <div class="dim sm mono">${n.ip?esc(n.ip):'<span style="color:var(--warn)">IP 待上报</span>'} · ${esc(n.iface)} · ${esc(n.bill_mode)}</div></td>
           <td>${statusTag(n.status)}
             <div class="sm" style="margin-top:3px">
               <span class="dim">${x.online?'在线':'离线'}</span></div></td>
@@ -674,7 +674,7 @@ function viewNodes(){
           <td class="sm dim">${ago(n.last_seen)}</td>
           <td class="ops">
             <button class="icon ghost" title="编辑" onclick="dlgNode(${n.id})">${I.edit}</button>
-            ${isCur?'':`<button class="icon ghost" title="切到这台" onclick="promote(${n.id})">${I.swap}</button>`}
+            ${isCur?'':(n.ip?`<button class="icon ghost" title="切到这台" onclick="promote(${n.id})">${I.swap}</button>`:`<button class="icon ghost" disabled title="IP 未上报，无法切换">${I.swap}</button>`)}
             <button class="icon ghost" title="清零本周期" onclick="resetNode(${n.id})">${I.broom}</button>
             <button class="icon ghost" title="删除" onclick="delNode(${n.id})">${I.trash}</button>
           </td>
@@ -982,8 +982,8 @@ function dlgNode(id){
     <label>名称</label>
     <input id="n_name" type="text" value="${n?esc(n.name):''}" placeholder="日本-A">
     <label>公网 IP</label>
-    <input id="n_ip" type="text" value="${n?esc(n.ip):''}" placeholder="1.2.3.4">
-    <div class="hint">域名会指到这台 IP。用完切下一台时改的是 DNS。</div>
+    <input id="n_ip" type="text" value="${n?esc(n.ip):''}" placeholder="留空自动获取">
+    <div class="hint">留空即可。节点首次心跳时面板会从连接里识别它的公网 IP 自动填入；<br>以后 IP 变了也会自动更新，正在生效的节点还会同步改 DNS。</div>
     <label>网卡名</label>
     <input id="n_iface" type="text" value="${n?esc(n.iface):'eth0'}">
     <div class="hint">OpenVZ 老机器一般是 venet0，别填错。</div>
@@ -1023,7 +1023,7 @@ async function saveNode(id){
     is_backup: !!$('#n_backup')?.checked,
   };
   if($('#n_order')) body.sort_order = parseInt($('#n_order').value||'0',10);
-  if(!body.name||!body.ip){ alert('名称和 IP 必填'); return; }
+  if(!body.name){ alert('名称必填'); return; }
   try{
     if(id){
       await api('PATCH','/api/nodes/'+id, body);

@@ -607,6 +607,24 @@ func (s *Store) AcceptBeat(nodeID, nicAcc, relayAcc, ver int64) (wantVersion int
 
 // SetStatus / SetCurrentNode 等小操作
 // SetRTTs 批量更新延迟，只落盘一次
+// SetNodeIP 更新节点公网 IP，返回旧值
+func (s *Store) SetNodeIP(nodeID int64, ip string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.db.Nodes {
+		if s.db.Nodes[i].ID == nodeID {
+			old := s.db.Nodes[i].IP
+			if old == ip {
+				return old
+			}
+			s.db.Nodes[i].IP = ip
+			_ = s.save()
+			return old
+		}
+	}
+	return ""
+}
+
 func (s *Store) SetRTTs(rtts map[int64]int) {
 	if len(rtts) == 0 {
 		return

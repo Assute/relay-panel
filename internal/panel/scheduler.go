@@ -109,6 +109,9 @@ func (s *Scheduler) isDead(n *Node, g *Group) bool {
 
 // usable 能不能当候选
 func usable(n Node) bool {
+	if n.IP == "" {
+		return false // 还没上报过 IP，不知道域名该指向哪
+	}
 	switch n.Status {
 	case StatusDisabled, StatusExhausted, StatusDraining:
 		return false
@@ -202,6 +205,16 @@ func (s *Scheduler) tickGroup(g *Group) {
 func (s *Scheduler) switchTo(g *Group, from *Node, nodes []Node, reason string) {
 	cands := candidates(nodes, from)
 	if len(cands) == 0 {
+		// 新建的节点还没心跳过、IP 未知，等它们上来就行，不算故障
+		pending := 0
+		for _, n := range nodes {
+			if n.IP == "" {
+				pending++
+			}
+		}
+		if pending == len(nodes) {
+			return
+		}
 		s.store.Alert(g.ID, 0, "error", "分组内没有可用节点")
 		return
 	}
