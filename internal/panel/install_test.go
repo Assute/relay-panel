@@ -50,6 +50,25 @@ func postInstall(t *testing.T, base, sid, body string) (int, map[string]any) {
 	return resp.StatusCode, out
 }
 
+// 安装脚本该有的护栏：失败能定位、先停旧进程、装前看磁盘
+func TestInstallScriptGuards(t *testing.T) {
+	s := installTmpl("https://panel.example.test")
+	for _, want := range []string{
+		"trap 'echo \"[错误] 第 $LINENO 行失败", // 失败能指出是哪一行
+		"systemctl stop relay-node",            // 先停旧进程，否则覆盖运行中的二进制会 Text file busy
+		"df -P /usr/local",                     // 装前看磁盘
+		"/tmp/relay-node.bin",                  // 优先用面板推上来的二进制
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("安装脚本缺少 %q", want)
+		}
+	}
+	// 面板地址必须替换进脚本
+	if !strings.Contains(s, `PANEL="https://panel.example.test"`) {
+		t.Fatal("面板地址没替换进去")
+	}
+}
+
 // 通用密码：新机器留空时复用最近一次记住的那个
 func TestInstallReusesUniversalPassword(t *testing.T) {
 	store, srv, sid := newInstallFixture(t)

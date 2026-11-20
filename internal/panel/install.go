@@ -9,6 +9,10 @@ func installTmpl(base string) string {
 	t := `#!/bin/bash
 set -euo pipefail
 
+# 任何一步失败都打出具体是哪一行、哪条命令，不然远端只回一句
+# "Process exited with status 1"，在面板上看不出卡在哪。
+trap 'echo "[错误] 第 $LINENO 行失败: $BASH_COMMAND" >&2' ERR
+
 PANEL=""
 TOKEN=""
 for arg in "$@"; do
@@ -40,9 +44,23 @@ case "$ARCH" in
   *) echo "不支持的架构: $ARCH" >&2; exit 1 ;;
 esac
 
+# 覆盖正在运行的可执行文件会报 Text file busy（跨分区的 mv 是复制+截断，
+# 一样会失败）。先停掉再装，反正是重装。
+if systemctl is-active --quiet relay-node 2>/dev/null; then
+  echo "[0/4] 停止已在运行的 relay-node"
+  systemctl stop relay-node || true
+fi
+
+AVAIL=$(df -P /usr/local | awk 'NR==2{print $4}')
+if [ -n "$AVAIL" ] && [ "$AVAIL" -lt 30720 ]; then
+  echo "[错误] /usr/local 所在分区只剩 ${AVAIL}KB，至少要 30MB" >&2
+  exit 1
+fi
+
 BIN="/usr/local/bin/relay-node"
 if [ -f /tmp/relay-node.bin ] && [ -s /tmp/relay-node.bin ]; then
-  echo "[1/4] 使用面板推送的 relay-node（$A）"
+  SZ=$(wc -c < /tmp/relay-node.bin)
+  echo "[1/4] 使用面板推送的 relay-node（$A，${SZ} 字节）"
   mv -f /tmp/relay-node.bin "${BIN}"
 else
   echo "[1/4] 下载 relay-node（$A）"
