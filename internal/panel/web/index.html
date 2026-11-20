@@ -1247,10 +1247,11 @@ function dlgNode(id){
     <div class="hint">OpenVZ 老机器一般是 venet0，别填错。</div>
     <label>计费口径</label>
     <select id="n_bill">
-      <option value="both" ${!n||n.bill_mode==='both'?'selected':''}>双向（大多数商家）</option>
-      <option value="tx" ${n&&n.bill_mode==='tx'?'selected':''}>只算出向</option>
+      <option value="tx" ${!n||n.bill_mode==='tx'?'selected':''}>只算出向（默认）</option>
+      <option value="both" ${n&&n.bill_mode==='both'?'selected':''}>双向</option>
       <option value="rx" ${n&&n.bill_mode==='rx'?'selected':''}>只算入向</option>
     </select>
+    <div class="hint">绝大多数商家只算上传（出向）。选错了用量会差一倍。</div>
     <label>本机流量配额（GB）</label>
     <input id="n_quota" type="number" value="${n?Math.round(n.quota_bytes/1073741824):200}">
     <div class="hint">按商家后台填。面板自动留 5% 余量，不用自己减。</div>
@@ -1417,13 +1418,21 @@ async function dlgServer(){
     <label>SSH 用户名</label>
     <input id="s_user" type="text" value="root">
     <label>SSH 密码</label>
-    <input id="s_pass" type="password" placeholder="第一次要填，之后留空">
-    <div class="hint">密码只写进面板的 data.json（权限 0600），同一台机器装第二次留空即可。<br>
-      目标机必须能访问面板的 Public URL，安装包从那里下载。</div>
+    <input id="s_pass" type="password" placeholder="填一次，之后所有服务器共用">
+    <div class="hint">填一次就记住，之后每台服务器密码栏留空即可（同一套 root 密码的话）。<br>
+      密码只写进面板的 data.json（权限 0600），不会回传给浏览器。<br>
+      目标机必须能访问面板的 Public URL。</div>
     <label>名称（可选）</label>
     <input id="s_name" type="text" placeholder="留空就用 IP">
     <label>流量配额（GB）</label>
     <input id="s_quota" type="number" value="200">
+    <label>计费口径</label>
+    <select id="s_bill">
+      <option value="tx" selected>只算出向（默认）</option>
+      <option value="both">双向</option>
+      <option value="rx">只算入向</option>
+    </select>
+    <div class="hint">按商家后台对一下：绝大多数只算上传（出向）。</div>
     <label>网卡名</label>
     <input id="s_iface" type="text" value="eth0">
     <div class="hint">不确定就留 eth0，节点上线后会自己挑流量最大的那张。</div>
@@ -1438,11 +1447,18 @@ function checkServerCred(){
   const box = $('#s_cred');
   if(!box) return;
   const c = (S.creds||[]).find(x=>x.ip===ip);
-  if(!c){ box.innerHTML = ''; return; }
-  if(c.port && $('#s_port')) $('#s_port').value = c.port;
-  if(c.user && $('#s_user')) $('#s_user').value = c.user;
-  box.innerHTML = c.has_password
-    ? `<span style="color:var(--ok)">这台记住了密码（${esc(c.user)}@${esc(c.ip)}:${c.port}），密码栏留空即可</span>`
+  if(c){
+    if(c.port && $('#s_port')) $('#s_port').value = c.port;
+    if(c.user && $('#s_user')) $('#s_user').value = c.user;
+    box.innerHTML = c.has_password
+      ? `<span style="color:var(--ok)">这台记住了密码（${esc(c.user)}@${esc(c.ip)}:${c.port}），密码栏留空即可</span>`
+      : '';
+    return;
+  }
+  // 没见过这台：只要记住过任意一台的密码，就按「通用密码」复用
+  const any = (S.creds||[]).find(x=>x.has_password);
+  box.innerHTML = any
+    ? `<span style="color:var(--ok)">会用记住的通用密码（上次用在 ${esc(any.user)}@${esc(any.ip)}），密码留空即可</span>`
     : '';
 }
 
@@ -1455,12 +1471,17 @@ async function doInstall(){
     password: $('#s_pass').value,
     name: ($('#s_name').value||'').trim(),
     quota_gb: parseInt($('#s_quota').value||'200',10),
+    bill_mode: $('#s_bill')?.value || 'tx',
     iface: ($('#s_iface').value||'eth0').trim(),
   };
   if(!body.ip){ alert('服务器 IP 必填'); return; }
   if(!body.password){
     const c = (S.creds||[]).find(x=>x.ip===body.ip);
-    if(!c || !c.has_password){ alert('第一次添加这台服务器要填 SSH 密码'); return; }
+    const any = (S.creds||[]).find(x=>x.has_password);
+    if(!(c && c.has_password) && !any){
+      alert('第一次用要填一次 SSH 密码，之后所有服务器共用它');
+      return;
+    }
   }
   const btn = document.querySelector('dialog .primary');
   const cancelBtn = document.querySelector('dialog .dlg-ft button');

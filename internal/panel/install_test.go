@@ -50,6 +50,43 @@ func postInstall(t *testing.T, base, sid, body string) (int, map[string]any) {
 	return resp.StatusCode, out
 }
 
+// 通用密码：新机器留空时复用最近一次记住的那个
+func TestInstallReusesUniversalPassword(t *testing.T) {
+	store, srv, sid := newInstallFixture(t)
+	// 先记住一台的密码
+	if _, err := store.SaveCred(Cred{IP: "10.0.0.9", Port: 22, User: "root", Password: "shared-pw"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 另一台从没见过的 IP，密码留空 —— 应该复用，而不是报「第一次要填密码」
+	body := `{"group_id":1,"ip":"127.0.0.1","ssh_port":1,"user":"root","password":"","name":"new","quota_gb":200}`
+	code, out := postInstall(t, srv.URL, sid, body)
+	if code != 200 {
+		t.Fatalf("应复用通用密码，实际 HTTP %d (%v)", code, out)
+	}
+	// SSH 会失败（端口 1 没人监听），但失败原因必须是连接被拒，不是「没密码」
+	if msg, _ := out["error"].(string); strings.Contains(msg, "密码") {
+		t.Fatalf("不该报缺密码，实际 %q", msg)
+	}
+	// 新 IP 的凭据也存下来了，密码跟着通用那个
+	c := store.CredByIP("127.0.0.1")
+	if c == nil || c.Password != "shared-pw" {
+		t.Fatalf("新机器应记住通用密码: %+v", c)
+	}
+}
+
+// 新节点的计费口径默认只算出向
+func TestNewNodeDefaultsToTx(t *testing.T) {
+	s, _ := newTestStore(t)
+	n, err := s.CreateNode(Node{GroupID: 1, Name: "x2", IP: "1.2.3.4", Token: "t2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n.BillMode != "tx" {
+		t.Fatalf("默认口径应为 tx，实际 %q", n.BillMode)
+	}
+}
+
 // 面板里应该嵌着节点二进制（make assets 产出的）。
 // 没嵌也能跑——会退回让目标机自己下载——所以这里只提醒，不算失败。
 func TestEmbeddedNodeBinaries(t *testing.T) {

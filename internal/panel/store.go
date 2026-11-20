@@ -478,7 +478,8 @@ func (s *Store) CreateNode(n Node) (Node, error) {
 		n.Iface = "eth0"
 	}
 	if n.BillMode == "" {
-		n.BillMode = "both"
+		// 中转卖流量基本都是只算出向，双向会把入向也算进去、比商家后台多一倍
+		n.BillMode = "tx"
 	}
 	n.Status = StatusPending
 	n.SessionKey = ""
@@ -642,6 +643,24 @@ func (s *Store) CredByIP(ip string) *Cred {
 		}
 	}
 	return nil
+}
+
+// LastCred 返回最近用过的一条带密码的凭据。
+// 用途是「所有服务器同一个 SSH 密码」：新机器留空就直接复用这一条。
+func (s *Store) LastCred() *Cred {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var best *Cred
+	for i := range s.db.Creds {
+		if s.db.Creds[i].Password == "" {
+			continue
+		}
+		if best == nil || s.db.Creds[i].UsedAt > best.UsedAt {
+			c := s.db.Creds[i]
+			best = &c
+		}
+	}
+	return best
 }
 
 // SaveCred 按 IP 覆盖写入，没有就新增

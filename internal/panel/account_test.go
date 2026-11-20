@@ -17,7 +17,7 @@ func newTestStore(t *testing.T) (*Store, int64) {
 	if err != nil {
 		t.Fatalf("打开存储: %v", err)
 	}
-	n, err := s.CreateNode(Node{GroupID: 1, Name: "n1", Token: "tok", Iface: "ens5", BillMode: "tx", QuotaBytes: 200 * g1})
+	n, err := s.CreateNode(Node{GroupID: 1, Name: "n1", Token: "tok", Iface: "ens5", QuotaBytes: 200 * g1})
 	if err != nil {
 		t.Fatalf("建节点: %v", err)
 	}

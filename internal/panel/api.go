@@ -956,14 +956,21 @@ func (a *API) installServer(w http.ResponseWriter, r *http.Request) {
 		in.User = "root"
 	}
 
-	// 密码：没填就取这台机器记住的那个
+	// 密码：先看这台机器记过的，没有再复用最近一次用过的那个。
+	// 自用的机器通常同一个 root 密码，填一次就该处处能用。
 	old := a.store.CredByIP(in.IP)
 	if in.Password == "" {
-		if old == nil || old.Password == "" {
-			writeJSON(w, 400, map[string]string{"error": "第一次添加这台服务器需要填 SSH 密码"})
+		switch {
+		case old != nil && old.Password != "":
+			in.Password = old.Password
+		case a.store.LastCred() != nil:
+			last := a.store.LastCred()
+			in.Password = last.Password
+			log.Printf("远程安装: 复用记住的 SSH 密码（上次用在 %s）", last.IP)
+		default:
+			writeJSON(w, 400, map[string]string{"error": "第一次用要填一次 SSH 密码，之后所有服务器共用它"})
 			return
 		}
-		in.Password = old.Password
 	}
 
 	// 节点装完要去面板拉二进制，PublicURL 必须是节点能访问到的地址
