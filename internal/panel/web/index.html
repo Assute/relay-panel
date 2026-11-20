@@ -534,6 +534,14 @@ async function loadGroup(id){
   S.events  = arr(await api('GET','/api/events?group_id='+id+'&limit=60'));
 }
 
+// 线路页渲染用的是 S.allRules（跨分组全量），只刷当前分组的 S.rules 不够——
+// 删了一条规则，页面还会显示它，非得按 F5 重新 reload 才消失。
+async function refreshRules(){
+  S.allRules = arr(await api('GET','/api/rules'));
+  if(S.cur) await loadGroup(S.cur.id);
+  render();
+}
+
 /* =====================================================================
    登录页
    ===================================================================== */
@@ -1104,12 +1112,12 @@ async function delNode(id){
   catch(e){ alert(e.message); }
 }
 async function toggleRule(id,en){
-  try{ await api('PATCH','/api/rules/'+id,{enabled:!!en}); await loadGroup(S.cur.id); render(); }
+  try{ await api('PATCH','/api/rules/'+id,{enabled:!!en}); await refreshRules(); }
   catch(e){ alert(e.message); }
 }
 async function delRule(id){
   if(!confirm('删除这条线路？')) return;
-  try{ await api('DELETE','/api/rules/'+id); await loadGroup(S.cur.id); render(); }
+  try{ await api('DELETE','/api/rules/'+id); await refreshRules(); }
   catch(e){ alert(e.message); }
 }
 async function ack(id){
@@ -1496,7 +1504,7 @@ async function doImport(){
     if(r.errors && r.errors.length) msg += '\n' + r.errors.slice(0,8).join('\n');
     if(r.notes && r.notes.length) msg += '\n' + r.notes.slice(0,3).join('\n');
     setMsg('#imp_msg', msg, r.created>0);
-    if(r.created>0){ await loadGroup(S.cur.id); }
+    if(r.created>0){ await refreshRules(); }
   }catch(e){ setMsg('#imp_msg', e.message, false); }
 }
 
@@ -1545,7 +1553,7 @@ async function batchDelete(){
   try{
     const r = await api('POST','/api/groups/'+S.cur.id+'/rules/delete-batch',{ids});
     S.sel.clear();
-    await loadGroup(S.cur.id); render();
+    await refreshRules();
     toast(`已删除 ${r.deleted} 条`);
   }catch(e){ alert(e.message); }
 }
@@ -1556,7 +1564,7 @@ async function batchEnable(on){
   try{
     const r = await api('POST','/api/groups/'+S.cur.id+'/rules/enable-batch',{ids,enabled:on});
     S.sel.clear();
-    await loadGroup(S.cur.id); render();
+    await refreshRules();
     toast(`${on?'启用':'停用'}了 ${r.updated} 条`);
   }catch(e){ alert(e.message); }
 }
