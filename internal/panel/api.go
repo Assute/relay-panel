@@ -986,27 +986,61 @@ func (a *API) installServer(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = in.IP
 	}
-	order := 0
+
+	// 同组里这台 IP 已经有节点记录：复用，只换一份新 token。
+	// 重装是很常见的操作（换系统、删了 key、装坏了），
+	// 每次都报「该分组下已有相同 IP 的节点」逼用户先删记录太别扭。
+	var n *Node
 	for _, x := range a.store.Nodes(in.GroupID) {
-		if x.SortOrder >= order {
-			order = x.SortOrder + 10
+		if x.IP == in.IP {
+			nn := x
+			n = &nn
+			break
 		}
 	}
-	n, err := a.store.CreateNode(Node{
-		GroupID:    in.GroupID,
-		Name:       name,
-		IP:         in.IP,
-		Iface:      in.Iface,
-		BillMode:   in.BillMode,
-		QuotaBytes: in.QuotaGB * 1024 * 1024 * 1024,
-		SortOrder:  order,
-		Token:      randHex(24),
-		Role:       "node",
-		Forward:    true,
-	})
-	if err != nil {
-		writeJSON(w, 400, map[string]string{"error": err.Error()})
-		return
+	if n != nil {
+		// 保留配额/网卡/口径以外的东西不动，只重发凭证
+		upd := *n
+		upd.Name = name
+		if in.Iface != "" {
+			upd.Iface = in.Iface
+		}
+		if in.BillMode != "" {
+			upd.BillMode = in.BillMode
+		}
+		if in.QuotaGB > 0 {
+			upd.QuotaBytes = in.QuotaGB * 1024 * 1024 * 1024
+		}
+		if err := a.store.UpdateNode(upd); err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		n = a.store.ResetNodeKey(n.ID)
+		log.Printf("远程安装: 复用已有节点 %d (%s)，重新生成凭证", n.ID, name)
+	} else {
+		order := 0
+		for _, x := range a.store.Nodes(in.GroupID) {
+			if x.SortOrder >= order {
+				order = x.SortOrder + 10
+			}
+		}
+		created, err := a.store.CreateNode(Node{
+			GroupID:    in.GroupID,
+			Name:       name,
+			IP:         in.IP,
+			Iface:      in.Iface,
+			BillMode:   in.BillMode,
+			QuotaBytes: in.QuotaGB * 1024 * 1024 * 1024,
+			SortOrder:  order,
+			Token:      randHex(24),
+			Role:       "node",
+			Forward:    true,
+		})
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		n = &created
 	}
 
 	hostKey := ""

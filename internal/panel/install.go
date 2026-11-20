@@ -72,6 +72,12 @@ chmod +x "${BIN}"
 
 echo "[2/4] 写配置"
 install -d -m 0755 /etc/relay
+
+# 重装必须清掉旧的 session_key：节点启动时优先用 /var/lib/relay/key 里的凭证，
+# 那是上一次注册留下的，配新 token 也是白搭，会一直报 token_invalid 然后被
+# systemd 反复拉起。
+rm -f /var/lib/relay/key
+
 cat > /etc/relay/config.json <<EOF
 {
   "panel": "${PANEL}",
@@ -92,6 +98,9 @@ Type=simple
 ExecStart=/usr/local/bin/relay-node -config /etc/relay/config.json
 Restart=always
 RestartSec=5
+# 退出码 2 = 凭证被面板拒绝（token_invalid / 换机器了）。
+# 这种情况重启一万次也没用，只会刷日志，直接停住等人处理。
+RestartPreventExitStatus=2
 LimitNOFILE=1048576
 
 [Install]

@@ -50,6 +50,47 @@ func postInstall(t *testing.T, base, sid, body string) (int, map[string]any) {
 	return resp.StatusCode, out
 }
 
+// 同一台机器重装：复用节点记录、换新 token，不报 IP 冲突
+func TestInstallReusesExistingNode(t *testing.T) {
+	store, srv, sid := newInstallFixture(t)
+	// 先建一个节点占住这个 IP
+	old, err := store.CreateNode(Node{GroupID: 1, Name: "old", IP: "127.0.0.1", Token: "tok-old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldTok := old.Token
+
+	body := `{"group_id":1,"ip":"127.0.0.1","ssh_port":1,"user":"root","password":"x","name":"renamed","quota_gb":150}`
+	code, out := postInstall(t, srv.URL, sid, body)
+	if code != 200 {
+		t.Fatalf("重装不该报 IP 冲突，实际 %d (%v)", code, out)
+	}
+
+	ns := store.Nodes(1)
+	if len(ns) != 1 {
+		t.Fatalf("不该新增节点，实际 %d 个", len(ns))
+	}
+	got := ns[0]
+	if got.ID != old.ID {
+		t.Fatalf("应该复用同一个节点记录，ID %d != %d", got.ID, old.ID)
+	}
+	if got.Token == oldTok {
+		t.Fatal("重装必须换新 token，否则节点还拿旧凭证")
+	}
+	if strings.HasPrefix(got.Token, "used-") {
+		t.Fatal("新 token 不该是已作废的样子")
+	}
+	if got.Name != "renamed" {
+		t.Fatalf("名称应更新，实际 %q", got.Name)
+	}
+	if got.QuotaBytes != 150*1024*1024*1024 {
+		t.Fatalf("配额应更新，实际 %d", got.QuotaBytes)
+	}
+	if got.Status != StatusPending {
+		t.Fatalf("重装后应回到 pending，实际 %s", got.Status)
+	}
+}
+
 // 安装脚本该有的护栏：失败能定位、先停旧进程、装前看磁盘
 func TestInstallScriptGuards(t *testing.T) {
 	s := installTmpl("https://panel.example.test")
@@ -58,6 +99,8 @@ func TestInstallScriptGuards(t *testing.T) {
 		"systemctl stop relay-node",            // 先停旧进程，否则覆盖运行中的二进制会 Text file busy
 		"df -P /usr/local",                     // 装前看磁盘
 		"/tmp/relay-node.bin",                  // 优先用面板推上来的二进制
+		"rm -f /var/lib/relay/key",             // 重装要清旧 session_key，否则一直 token_invalid
+		"RestartPreventExitStatus=2",           // 凭证被拒时别让 systemd 无限拉起
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("安装脚本缺少 %q", want)

@@ -57,5 +57,9 @@ func main() {
 	}()
 
 	log.Printf("节点启动，面板: %s", cnf.Panel)
-	ag.Run()
+	code := ag.Run()
+	_ = meter.Persist()
+	if code != 0 {
+		os.Exit(code)
+	}
 }

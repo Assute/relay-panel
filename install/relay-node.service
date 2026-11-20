@@ -8,6 +8,9 @@ Type=simple
 ExecStart=/usr/local/bin/relay-node -config /etc/relay/config.json
 Restart=always
 RestartSec=5
+# 退出码 2 = 凭证被面板拒绝（token_invalid / 换机器了）。
+# 这种情况重启一万次也没用，只会刷日志，直接停住等人处理。
+RestartPreventExitStatus=2
 LimitNOFILE=1048576
 # 网卡读数需要普通权限即可；若开启 TPROXY 之类才需要更多 capabilities
 

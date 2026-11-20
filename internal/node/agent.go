@@ -112,7 +112,13 @@ func NewAgent(c *Config, m *NicMeter, f *Forwarder) *Agent {
 	}
 }
 
-func (a *Agent) Run() {
+// ExitFatal 凭证被面板拒绝时的退出码。
+// systemd unit 里配了 RestartPreventExitStatus=2：这种情况重启也没用，
+// 只会把 journal 刷满，不如停下来等人到面板上重新添加节点。
+const ExitFatal = 2
+
+// Run 一直跑到凭证被拒为止，返回进程退出码。
+func (a *Agent) Run() int {
 	// 上游连通性探针：默认一分钟一轮，连续三次不通才报给面板
 	go a.probe.Run()
 
@@ -141,7 +147,7 @@ func (a *Agent) Run() {
 		if err != nil {
 			if errors.Is(err, errFatal) {
 				log.Printf("致命错误，停止: %v", err)
-				return
+				return ExitFatal
 			}
 			log.Printf("连接中断: %v，%s 后重试", err, backoff)
 		}
