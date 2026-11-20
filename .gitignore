@@ -32,3 +32,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# 构建时生成的节点二进制（由 make assets 产出，不入库）
+/internal/panel/assets/node-linux-*

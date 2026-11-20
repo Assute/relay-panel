@@ -41,10 +41,16 @@ case "$ARCH" in
 esac
 
 BIN="/usr/local/bin/relay-node"
-echo "[1/4] 下载 relay-node ($A)"
-curl -fsSL "${PANEL}/dl/node-linux-${A}" -o "${BIN}.new"
-chmod +x "${BIN}.new"
-mv -f "${BIN}.new" "${BIN}"
+if [ -f /tmp/relay-node.bin ] && [ -s /tmp/relay-node.bin ]; then
+  echo "[1/4] 使用面板推送的 relay-node（$A）"
+  mv -f /tmp/relay-node.bin "${BIN}"
+else
+  echo "[1/4] 下载 relay-node（$A）"
+  curl -fsSL "${PANEL}/dl/node-linux-${A}" -o "${BIN}.new"
+  chmod +x "${BIN}.new"
+  mv -f "${BIN}.new" "${BIN}"
+fi
+chmod +x "${BIN}"
 
 echo "[2/4] 写配置"
 install -d -m 0755 /etc/relay

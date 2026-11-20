@@ -50,6 +50,25 @@ func postInstall(t *testing.T, base, sid, body string) (int, map[string]any) {
 	return resp.StatusCode, out
 }
 
+// 面板里应该嵌着节点二进制（make assets 产出的）。
+// 没嵌也能跑——会退回让目标机自己下载——所以这里只提醒，不算失败。
+func TestEmbeddedNodeBinaries(t *testing.T) {
+	for _, arch := range []string{"amd64", "arm64"} {
+		b := nodeBinary(arch)
+		if len(b) == 0 {
+			t.Logf("%s: 面板里没有嵌入节点二进制（构建时没跑 make assets），远程安装会退回自下载", arch)
+			continue
+		}
+		t.Logf("%s: 已嵌入 %d 字节", arch, len(b))
+	}
+	if b := nodeBinary("nonsense-arch"); b != nil {
+		t.Fatalf("未知架构不该返回二进制，实际 %d 字节", len(b))
+	}
+	if b := nodeBinary(""); b != nil {
+		t.Fatal("空架构不该返回二进制")
+	}
+}
+
 // 密码按 IP 记住：第二次留空能取到，指纹也保留
 func TestCredRememberPassword(t *testing.T) {
 	s, _ := newTestStore(t)

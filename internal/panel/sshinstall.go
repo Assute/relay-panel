@@ -11,6 +11,7 @@ package panel
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -31,6 +32,9 @@ type sshTarget struct {
 //
 // 不走 sftp 是有意的：x/crypto/ssh 自带 session 的 stdin，
 // 少引一个 sftp 依赖，也少一处要处理权限的地方。
+//
+// 如果面板里嵌了对应架构的节点二进制，会先推上去再用它装；
+// 没嵌就退回老路——让目标机自己去面板的 /dl/ 下载。
 func runInstallScript(t sshTarget, script, scriptArgs string, timeout time.Duration) (output, hostKey string, err error) {
 	var fp string
 	cfg := &ssh.ClientConfig{
@@ -52,6 +56,16 @@ func runInstallScript(t sshTarget, script, scriptArgs string, timeout time.Durat
 		return "", fp, fmt.Errorf("连接 %s 失败: %w", addr, err)
 	}
 	defer client.Close()
+
+	// 先问一句架构，能不能推二进制看这个
+	arch := detectArch(client)
+	if bin := nodeBinary(arch); bin != nil {
+		if err := pushBinary(client, bin, "/tmp/relay-node.bin"); err != nil {
+			return "", fp, fmt.Errorf("推送节点二进制失败: %w", err)
+		}
+	} else if arch != "" {
+		log.Printf("远程安装: 面板里没有 %s 的节点二进制，改为让目标机自行下载", arch)
+	}
 
 	sess, err := client.NewSession()
 	if err != nil {
@@ -79,4 +93,45 @@ func runInstallScript(t sshTarget, script, scriptArgs string, timeout time.Durat
 		_ = sess.Close()
 		return buf.String(), fp, fmt.Errorf("安装超时（%s），远端可能还在跑", timeout)
 	}
+}
+
+// detectArch 用 uname -m 认出目标机架构，映射成我们二进制文件的命名。
+// 认不出来返回空串——那就老老实实走下载。
+func detectArch(client *ssh.Client) string {
+	sess, err := client.NewSession()
+	if err != nil {
+		return ""
+	}
+	defer sess.Close()
+	var b bytes.Buffer
+	sess.Stdout = &b
+	if err := sess.Run("uname -m"); err != nil {
+		return ""
+	}
+	switch strings.TrimSpace(b.String()) {
+	case "x86_64", "amd64":
+		return "amd64"
+	case "aarch64", "arm64":
+		return "arm64"
+	case "armv7l", "armv7", "armv6l":
+		return "arm"
+	}
+	return ""
+}
+
+// pushBinary 把本地文件按字节推进远端 /tmp。
+// 用 cat 接 stdin，比 base64 省一整轮膨胀，也不用 sftp。
+func pushBinary(client *ssh.Client, data []byte, dest string) error {
+	sess, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+	sess.Stdin = bytes.NewReader(data)
+	var errBuf bytes.Buffer
+	sess.Stderr = &errBuf
+	if err := sess.Run("cat > " + dest + " && chmod +x " + dest); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(errBuf.String()))
+	}
+	return nil
 }
