@@ -862,6 +862,7 @@ function viewNodes(){
     <div class="toolbar">
       <span class="dim sm">每台都跑同一套转发规则，域名指哪台哪台干活。域名指当前这台，用满自动切下一台。</span>
       <div class="sp"></div>
+      <button class="ghost" onclick="dlgServer()">${I.plus} 添加服务器</button>
       <button class="primary" onclick="dlgNode()">${I.plus} 添加节点</button>
     </div>
     <div class="bd flush">
@@ -1397,6 +1398,98 @@ function copyCmd(){
   }else{
     toast('请手动选中命令后复制');
   }
+}
+
+/* ---------- 远程安装 ---------- */
+async function dlgServer(){
+  if(!S.creds){ try{ S.creds = arr(await api('GET','/api/servers')); }catch(e){ S.creds = []; } }
+  const gid = (S.cur && S.cur.id) || 0;
+  modal('添加服务器（自动装节点）', `
+    <label>所属分组</label>
+    <select id="s_gid">
+      ${S.groups.map(x=>`<option value="${x.group.id}" ${x.group.id===gid?'selected':''}>${esc(x.group.name)}</option>`).join('')}
+    </select>
+    <label>服务器 IP</label>
+    <input id="s_ip" type="text" placeholder="1.2.3.4" onblur="checkServerCred()">
+    <div id="s_cred" class="hint" style="margin-top:6px"></div>
+    <label>SSH 端口</label>
+    <input id="s_port" type="number" value="22">
+    <label>SSH 用户名</label>
+    <input id="s_user" type="text" value="root">
+    <label>SSH 密码</label>
+    <input id="s_pass" type="password" placeholder="第一次要填，之后留空">
+    <div class="hint">密码只写进面板的 data.json（权限 0600），同一台机器装第二次留空即可。<br>
+      目标机必须能访问面板的 Public URL，安装包从那里下载。</div>
+    <label>名称（可选）</label>
+    <input id="s_name" type="text" placeholder="留空就用 IP">
+    <label>流量配额（GB）</label>
+    <input id="s_quota" type="number" value="200">
+    <label>网卡名</label>
+    <input id="s_iface" type="text" value="eth0">
+    <div class="hint">不确定就留 eth0，节点上线后会自己挑流量最大的那张。</div>
+  `, `
+    <button onclick="closeDlg()">取消</button>
+    <button class="primary" onclick="doInstall()">开始安装</button>
+  `);
+}
+
+function checkServerCred(){
+  const ip = ($('#s_ip')?.value||'').trim();
+  const box = $('#s_cred');
+  if(!box) return;
+  const c = (S.creds||[]).find(x=>x.ip===ip);
+  if(!c){ box.innerHTML = ''; return; }
+  if(c.port && $('#s_port')) $('#s_port').value = c.port;
+  if(c.user && $('#s_user')) $('#s_user').value = c.user;
+  box.innerHTML = c.has_password
+    ? `<span style="color:var(--ok)">这台记住了密码（${esc(c.user)}@${esc(c.ip)}:${c.port}），密码栏留空即可</span>`
+    : '';
+}
+
+async function doInstall(){
+  const body = {
+    group_id: parseInt($('#s_gid').value||'0',10),
+    ip: ($('#s_ip').value||'').trim(),
+    ssh_port: parseInt($('#s_port').value||'22',10),
+    user: ($('#s_user').value||'root').trim(),
+    password: $('#s_pass').value,
+    name: ($('#s_name').value||'').trim(),
+    quota_gb: parseInt($('#s_quota').value||'200',10),
+    iface: ($('#s_iface').value||'eth0').trim(),
+  };
+  if(!body.ip){ alert('服务器 IP 必填'); return; }
+  if(!body.password){
+    const c = (S.creds||[]).find(x=>x.ip===body.ip);
+    if(!c || !c.has_password){ alert('第一次添加这台服务器要填 SSH 密码'); return; }
+  }
+  const btn = document.querySelector('dialog .primary');
+  const cancelBtn = document.querySelector('dialog .dlg-ft button');
+  if(btn){ btn.disabled = true; btn.textContent = '安装中…'; }
+  if(cancelBtn) cancelBtn.disabled = true;
+  try{
+    const r = await api('POST','/api/servers/install', body);
+    closeDlg();
+    S.creds = null;
+    await reload(); render();
+    showInstallResult(r);
+  }catch(e){
+    if(btn){ btn.disabled = false; btn.textContent = '开始安装'; }
+    if(cancelBtn) cancelBtn.disabled = false;
+    alert(e.message);
+  }
+}
+
+function showInstallResult(r){
+  const ok = r && r.ok;
+  modal(ok ? '安装完成' : '安装失败', `
+    <div class="hint" style="color:${ok?'var(--ok)':'var(--err)'};margin-top:0">
+      ${ok ? '节点已启动，15 秒内会出现在列表里（状态从「未接入」变「待命」或「运行中」）'
+           : '远端执行出错，下面是它自己的输出'}
+    </div>
+    <pre style="max-height:320px;overflow:auto;background:var(--hover);border:1px solid var(--line);
+      border-radius:8px;padding:10px;font-size:11.5px;line-height:1.6;white-space:pre-wrap">${esc((r&&r.output)||'(没有输出)')}</pre>
+    ${r&&r.error?`<div class="hint" style="color:var(--err)">${esc(r.error)}</div>`:''}
+  `, `<button class="primary" onclick="closeDlg()">知道了</button>`);
 }
 
 /* ---------- 线路 ---------- */

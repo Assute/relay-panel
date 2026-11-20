@@ -180,7 +180,26 @@ type Ball struct {
 	Rules  []Rule  `json:"rules"`
 	Events []Event `json:"events"`
 	Alerts []Alert `json:"alerts"`
+	Creds  []Cred  `json:"creds"`
 	Seq    int64   `json:"seq"`
+}
+
+// Cred 一台可以被面板远程安装的服务器凭据。
+//
+// 密码是明文存的（data.json 权限 0600）——面板要能重复登录就必须拿到原文。
+// 这份文件本来就是面板的最高权限，谁读到它谁就能改面板，加密也只是防一眼看，
+// 所以不做假安全：写清楚，靠文件权限和机器权限兜。
+type Cred struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	IP       string `json:"ip"`
+	Port     int    `json:"port"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+	// HostKey 首次连接时记下的主机指纹。之后指纹变了就拒绝连接，
+	// 防止中途被换成另一台机器把密码骗走。
+	HostKey string `json:"host_key"`
+	UsedAt  int64  `json:"used_at"`
 }
 
 type Store struct {
@@ -598,6 +617,65 @@ func (s *Store) DeleteRule(id int64) error {
 			}
 		}
 	}
+	return s.save()
+}
+
+// ---------- 远程安装用的服务器凭据 ----------
+
+// Creds 返回全部凭据（含密码，仅供服务端内部使用）
+func (s *Store) Creds() []Cred {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Cred, len(s.db.Creds))
+	copy(out, s.db.Creds)
+	return out
+}
+
+// CredByIP 按 IP 找已记住的凭据，用来实现「密码填一次就够了」
+func (s *Store) CredByIP(ip string) *Cred {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.db.Creds {
+		if s.db.Creds[i].IP == ip {
+			c := s.db.Creds[i]
+			return &c
+		}
+	}
+	return nil
+}
+
+// SaveCred 按 IP 覆盖写入，没有就新增
+func (s *Store) SaveCred(c Cred) (Cred, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c.UsedAt = time.Now().Unix()
+	for i := range s.db.Creds {
+		if s.db.Creds[i].IP == c.IP {
+			c.ID = s.db.Creds[i].ID
+			// 指纹沿用旧的，除非这次拿到了新的
+			if c.HostKey == "" {
+				c.HostKey = s.db.Creds[i].HostKey
+			}
+			s.db.Creds[i] = c
+			return c, s.save()
+		}
+	}
+	c.ID = s.nextID()
+	s.db.Creds = append(s.db.Creds, c)
+	return c, s.save()
+}
+
+// DeleteCred 忘记某台服务器的密码
+func (s *Store) DeleteCred(id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.db.Creds[:0]
+	for _, c := range s.db.Creds {
+		if c.ID != id {
+			out = append(out, c)
+		}
+	}
+	s.db.Creds = out
 	return s.save()
 }
 

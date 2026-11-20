@@ -82,6 +82,9 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("GET /api/rules", a.auth(http.HandlerFunc(a.AllRules)))
 	mux.Handle("POST /api/nodes/{id}/cmd", a.auth(http.HandlerFunc(a.nodeCmd)))
 	mux.Handle("POST /api/nodes/{id}/recover", a.auth(http.HandlerFunc(a.recoverNode)))
+	mux.Handle("GET /api/servers", a.auth(http.HandlerFunc(a.listServers)))
+	mux.Handle("POST /api/servers/install", a.auth(http.HandlerFunc(a.installServer)))
+	mux.Handle("DELETE /api/servers/{id}", a.auth(http.HandlerFunc(a.deleteServer)))
 
 	mux.Handle("/", webHandler())
 
@@ -883,6 +886,155 @@ func (a *API) testGroupDNS(w http.ResponseWriter, r *http.Request) {
 		"proxied": rec.Proxied, "ttl": rec.TTL,
 		"message": msg,
 	})
+}
+
+// ---------- 远程安装 ----------
+
+// listServers 列出记住的服务器。密码永远不出服务端，只告诉前端「记住了一个」。
+func (a *API) listServers(w http.ResponseWriter, r *http.Request) {
+	cs := a.store.Creds()
+	out := make([]map[string]any, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, map[string]any{
+			"id":           c.ID,
+			"name":         c.Name,
+			"ip":           c.IP,
+			"port":         c.Port,
+			"user":         c.User,
+			"used_at":      c.UsedAt,
+			"has_password": c.Password != "",
+		})
+	}
+	writeJSON(w, 200, out)
+}
+
+func (a *API) deleteServer(w http.ResponseWriter, r *http.Request) {
+	if err := a.store.DeleteCred(pathID(r, "id")); err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// installServer 建一个节点记录，然后 SSH 上去把 relay-node 装好、拉起来。
+//
+// 密码只要填一次：第一次成功后按 IP 记住，下次这台机器上再装（或者重装）
+// 留空就行，服务端自己用存着的那个。
+func (a *API) installServer(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		GroupID  int64  `json:"group_id"`
+		Name     string `json:"name"`
+		IP       string `json:"ip"`
+		SSHPort  int    `json:"ssh_port"`
+		User     string `json:"user"`
+		Password string `json:"password"`
+		QuotaGB  int64  `json:"quota_gb"`
+		Iface    string `json:"iface"`
+		BillMode string `json:"bill_mode"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
+		return
+	}
+	in.IP = strings.TrimSpace(in.IP)
+	if in.IP == "" {
+		writeJSON(w, 400, map[string]string{"error": "服务器 IP 必填"})
+		return
+	}
+	if a.store.Group(in.GroupID) == nil {
+		writeJSON(w, 400, map[string]string{"error": "分组不存在"})
+		return
+	}
+	if in.SSHPort <= 0 {
+		in.SSHPort = 22
+	}
+	if in.SSHPort > 65535 {
+		writeJSON(w, 400, map[string]string{"error": "SSH 端口不合法"})
+		return
+	}
+	if in.User == "" {
+		in.User = "root"
+	}
+
+	// 密码：没填就取这台机器记住的那个
+	old := a.store.CredByIP(in.IP)
+	if in.Password == "" {
+		if old == nil || old.Password == "" {
+			writeJSON(w, 400, map[string]string{"error": "第一次添加这台服务器需要填 SSH 密码"})
+			return
+		}
+		in.Password = old.Password
+	}
+
+	// 节点装完要去面板拉二进制，PublicURL 必须是节点能访问到的地址
+	base := strings.TrimRight(a.cnf.PublicURL, "/")
+	if base == "" || strings.Contains(base, "127.0.0.1") || strings.Contains(base, "localhost") {
+		writeJSON(w, 400, map[string]string{
+			"error": "先在「设置」里填 Public URL（节点要从这个地址下载安装包），不能是本机回环地址",
+		})
+		return
+	}
+
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		name = in.IP
+	}
+	order := 0
+	for _, x := range a.store.Nodes(in.GroupID) {
+		if x.SortOrder >= order {
+			order = x.SortOrder + 10
+		}
+	}
+	n, err := a.store.CreateNode(Node{
+		GroupID:    in.GroupID,
+		Name:       name,
+		IP:         in.IP,
+		Iface:      in.Iface,
+		BillMode:   in.BillMode,
+		QuotaBytes: in.QuotaGB * 1024 * 1024 * 1024,
+		SortOrder:  order,
+		Token:      randHex(24),
+		Role:       "node",
+		Forward:    true,
+	})
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+
+	hostKey := ""
+	if old != nil {
+		hostKey = old.HostKey
+	}
+	log.Printf("远程安装: %s@%s:%d -> 节点 %d (%s)", in.User, in.IP, in.SSHPort, n.ID, name)
+
+	out, fp, instErr := runInstallScript(
+		sshTarget{Host: in.IP, Port: in.SSHPort, User: in.User, Pass: in.Password, HostKey: hostKey},
+		installTmpl(base),
+		fmt.Sprintf("--panel=%s --token=%s", base, n.Token),
+		90*time.Second,
+	)
+
+	// 不管成没成都记住：成功了下次不用再填，失败了用户改完能直接重试
+	if _, err := a.store.SaveCred(Cred{
+		Name: name, IP: in.IP, Port: in.SSHPort,
+		User: in.User, Password: in.Password, HostKey: fp,
+	}); err != nil {
+		log.Printf("保存凭据失败: %v", err)
+	}
+
+	a.kick()
+
+	if instErr != nil {
+		log.Printf("远程安装失败 node %d: %v", n.ID, instErr)
+	} else {
+		log.Printf("远程安装完成 node %d (%s)", n.ID, name)
+	}
+	resp := map[string]any{"node": n, "output": out, "ok": instErr == nil}
+	if instErr != nil {
+		resp["error"] = instErr.Error()
+	}
+	writeJSON(w, 200, resp)
 }
 
 // ---------- Agent 心跳 ----------
