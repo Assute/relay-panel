@@ -1138,8 +1138,17 @@ function modal(title, bodyHtml, footHtml){
     <div class="dlg-ft">${footHtml}</div>`;
   document.body.appendChild(d);
   d.showModal();
-  d.addEventListener('click',e=>{ if(e.target===d) d.close(); });
-  d.addEventListener('close',()=>d.remove());
+
+  // 改过东西再点遮罩 / 按 Esc 关闭时要拦一下。
+  // 之前是直接 close()：改了半天手一滑点到外面，弹窗没了、改动也没了，
+  // 还以为保存成功，回到列表一看「怎么没变化」。
+  let dirty = false;
+  d.addEventListener('input', ()=>{ dirty = true; });
+  d.addEventListener('change', ()=>{ dirty = true; });
+  const guard = () => dirty && !confirm('还没保存，确定丢弃改动？');
+  d.addEventListener('click', e=>{ if(e.target===d && !guard()) d.close(); });
+  d.addEventListener('cancel', e=>{ if(guard()) e.preventDefault(); });
+  d.addEventListener('close', ()=>d.remove());
   return d;
 }
 const closeDlg = () => document.querySelector('dialog')?.close();
