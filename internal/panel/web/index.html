@@ -1404,11 +1404,11 @@ function dlgRule(id, gid){
     <label>名称</label>
     <input id="r_name" type="text" value="${r?esc(r.name||''):''}" placeholder="新加坡">
     <label>监听端口（域名后面那个端口）</label>
-    <input id="r_lp" type="number" value="${r?r.listen_port:''}" placeholder="25380">
-    <label>转发目标地址</label>
-    <input id="r_th" type="text" value="${r?esc(r.target_host):''}" placeholder="1.2.3.4 或 example.com">
-    <label>目标端口</label>
-    <input id="r_tp" type="number" value="${r?r.target_port:''}" placeholder="443">
+    <input id="r_lp" type="number" value="${r?r.listen_port:''}" placeholder="25210">
+    <label>转发目标（地址:端口）</label>
+    <input id="r_target" type="text" value="${r?esc((r.target_host||'')+':'+(r.target_port||'')):''}" placeholder="18.141.35.11:25310">
+    <div class="hint">写成 <b>地址:端口</b>，地址可以是 IP 也可以是域名。<br>
+      别和上面的监听端口填反：监听端口是本机对外开放的，这里是要转发到的上游。</div>
     <label>协议</label>
     <select id="r_proto">
       <option value="tcp" ${!r||r.protocol==='tcp'?'selected':''}>TCP</option>
@@ -1423,17 +1423,34 @@ function dlgRule(id, gid){
 }
 
 async function saveRule(id){
-  const body = {
-    name: ($('#r_name')?.value||'').trim(),
-    listen_port: parseInt($('#r_lp').value||'0',10),
-    target_host: $('#r_th').value.trim(),
-    target_port: parseInt($('#r_tp').value||'0',10),
-    protocol: $('#r_proto').value,
-  };
-  if(!body.listen_port||!body.target_host||!body.target_port){
-    alert('监听端口、目标地址、目标端口都要填');
+  // 目标写成一个「地址:端口」，别让人对着两个框猜哪个填哪个——
+  // 填反了不会报错，只会静默连不上，很难查。
+  const raw = ($('#r_target')?.value||'').trim();
+  const m = raw.match(/^(.+):(\d{1,5})$/);
+  if(!m){
+    alert('转发目标要写成 地址:端口，例如 18.141.35.11:25310');
     return;
   }
+  let host = m[1].trim();
+  const targetPort = parseInt(m[2],10);
+  if(host.startsWith('[') && host.endsWith(']')) host = host.slice(1,-1); // [::1]:443
+  if(!host){ alert('转发目标的地址不能为空'); return; }
+  if(!(targetPort>0 && targetPort<65536)){ alert('目标端口要在 1-65535 之间'); return; }
+
+  const listenPort = parseInt($('#r_lp').value||'0',10);
+  if(!listenPort){ alert('监听端口要填'); return; }
+  if(listenPort===targetPort && (host==='127.0.0.1'||host==='localhost'||host==='::1')){
+    alert('监听端口和目标端口一样、目标又是本机，会转给自己。检查一下是不是填反了。');
+    return;
+  }
+
+  const body = {
+    name: ($('#r_name')?.value||'').trim(),
+    listen_port: listenPort,
+    target_host: host,
+    target_port: targetPort,
+    protocol: $('#r_proto').value,
+  };
   const gid = parseInt($('#r_gid')?.value||'0',10) || (S.cur && S.cur.id) || 0;
   try{
     if(id){
