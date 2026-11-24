@@ -20,7 +20,7 @@ import (
 const (
 	probeInterval = 60 * time.Second // 正常情况下一分钟一次
 	probeTimeout  = 3 * time.Second  // 单次拨号超时
-	probeRetryGap = 2 * time.Second  // 超时后隔 2 秒再试
+	probeRetryGap = 5 * time.Second  // 超时后隔 5 秒再试
 	probeMaxFails = 3                // 连续三次都超时才认定不通
 )
 
@@ -104,7 +104,7 @@ func (p *Prober) Run() {
 	}
 }
 
-// round 一轮探测：最多三次，中间隔 2 秒。
+// round 一轮探测：最多三次，中间隔 5 秒。
 // 任意一次成功就清零连续失败次数——「后面任意一次正常就重置」。
 //
 // 注意这里按版本号判断目标是否变更，而不是去读 changed 通道：

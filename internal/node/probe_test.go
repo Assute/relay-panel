@@ -49,7 +49,7 @@ func TestProberSuccess(t *testing.T) {
 func TestProberFails(t *testing.T) {
 	// 127.0.0.1:1 没有监听，连接会被立刻拒绝，不用等 3 秒超时
 	p := NewProber()
-	p.retryGap = 5 * time.Millisecond // 测试不等真 2 秒
+	p.retryGap = 5 * time.Millisecond // 测试不等真 5 秒
 	p.timeout = 500 * time.Millisecond
 	p.SetTarget("127.0.0.1:1")
 
@@ -67,7 +67,7 @@ func TestProberFails(t *testing.T) {
 	if errMsg == "" {
 		t.Fatal("应该记录失败原因")
 	}
-	// 三次尝试之间有两段 2 秒间隔
+	// 三次尝试之间有两段 retryGap 间隔
 	if elapsed < 2*p.retryGap {
 		t.Fatalf("重试间隔没生效，只用了 %v", elapsed)
 	}
