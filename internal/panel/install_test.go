@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -89,6 +90,81 @@ func TestInstallReusesExistingNode(t *testing.T) {
 	if got.Status != StatusPending {
 		t.Fatalf("重装后应回到 pending，实际 %s", got.Status)
 	}
+}
+
+// 更新脚本不能碰配置和账本，只换二进制
+func TestUpdateScriptKeepsState(t *testing.T) {
+	for _, want := range []string{
+		"/usr/local/bin/relay-node",
+		"/tmp/relay-node.bin",
+		"systemctl stop relay-node",
+		"systemctl start relay-node",
+	} {
+		if !strings.Contains(updateScript, want) {
+			t.Fatalf("更新脚本缺少 %q", want)
+		}
+	}
+	// 这两个一碰就等于把节点重置了：凭证没了会重新注册，账本没了流量归零
+	for _, forbidden := range []string{"/var/lib/relay/key", "/var/lib/relay/nic.state", "/etc/relay/config.json"} {
+		if strings.Contains(updateScript, forbidden) {
+			t.Fatalf("更新脚本不该碰 %q", forbidden)
+		}
+	}
+}
+
+// 一键更新的入参校验
+func TestUpdateNodesValidation(t *testing.T) {
+	store, srv, sid := newInstallFixture(t)
+	n, err := store.CreateNode(Node{GroupID: 1, Name: "n1", IP: "1.2.3.4", Token: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	call := func(body string) (int, map[string]any) {
+		req, _ := http.NewRequest("POST", srv.URL+"/api/nodes/update", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: "sid", Value: sid})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+
+	if code, out := call(`{"ids":[]}`); code != 400 {
+		t.Fatalf("空选择应 400，实际 %d (%v)", code, out)
+	}
+	big := make([]string, 51)
+	for i := range big {
+		big[i] = "1"
+	}
+	if code, _ := call(`{"ids":[` + strings.Join(big, ",") + `]}`); code != 400 {
+		t.Fatalf("超过 50 台应 400，实际 %d", code)
+	}
+
+	// 没有记住密码：应该逐台报错，而不是整个请求失败
+	code, out := call(`{"ids":[` + itoa64(n.ID) + `]}`)
+	if code != 200 {
+		t.Fatalf("应返回 200 + 明细，实际 %d", code)
+	}
+	results, _ := out["results"].([]any)
+	if len(results) != 1 {
+		t.Fatalf("应有 1 条结果，实际 %d", len(results))
+	}
+	first := results[0].(map[string]any)
+	if ok, _ := first["ok"].(bool); ok {
+		t.Fatal("没有 SSH 密码不该报成功")
+	}
+	if msg, _ := first["error"].(string); !strings.Contains(msg, "SSH 密码") {
+		t.Fatalf("错误信息应该点明缺 SSH 密码，实际 %q", msg)
+	}
+}
+
+func itoa64(v int64) string {
+	return strconv.FormatInt(v, 10)
 }
 
 // 安装脚本该有的护栏：失败能定位、先停旧进程、装前看磁盘

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -87,6 +88,7 @@ func (a *API) Routes() http.Handler {
 	mux.Handle("GET /api/rules", a.auth(http.HandlerFunc(a.AllRules)))
 	mux.Handle("POST /api/nodes/{id}/cmd", a.auth(http.HandlerFunc(a.nodeCmd)))
 	mux.Handle("POST /api/nodes/{id}/recover", a.auth(http.HandlerFunc(a.recoverNode)))
+	mux.Handle("POST /api/nodes/update", a.auth(http.HandlerFunc(a.updateNodes)))
 	mux.Handle("GET /api/servers", a.auth(http.HandlerFunc(a.listServers)))
 	mux.Handle("POST /api/servers/install", a.auth(http.HandlerFunc(a.installServer)))
 	mux.Handle("DELETE /api/servers/{id}", a.auth(http.HandlerFunc(a.deleteServer)))
@@ -747,6 +749,7 @@ func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 	tok := a.cnf.Token()
 	resp := map[string]any{
 		"build":                 BuildStamp,
+		"node_stamp":            NodeStamp,
 		"public_url":            a.cnf.PublicURL,
 		"db_path":               a.cnf.DB,
 		"cloudflare_token_set":  tok != "",
@@ -805,6 +808,105 @@ func (a *API) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	a.kick() // token 变了，让调度器重新试一次
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// updateNodes 一键更新节点：把面板里嵌的 node 推过去重启，
+// 不动配置、不动凭证、不动累计用量。
+//
+// 支持一次传多个 id（勾选批量）。并发 4 路上限——串行做十几台要等太久，
+// 全并发又容易把目标机同时打满，4 是个既不慢也不至于挤爆的数。
+func (a *API) updateNodes(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
+		return
+	}
+	if len(in.IDs) == 0 {
+		writeJSON(w, 400, map[string]string{"error": "没选中节点"})
+		return
+	}
+	if len(in.IDs) > 50 {
+		writeJSON(w, 400, map[string]string{"error": "一次最多更新 50 台"})
+		return
+	}
+
+	type result struct {
+		ID     int64  `json:"id"`
+		Name   string `json:"name"`
+		IP     string `json:"ip"`
+		OK     bool   `json:"ok"`
+		Error  string `json:"error,omitempty"`
+		Output string `json:"output,omitempty"`
+	}
+	results := make([]result, len(in.IDs))
+
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for i, id := range in.IDs {
+		wg.Add(1)
+		go func(i int, id int64) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			n := a.store.Node(id)
+			if n == nil {
+				results[i] = result{ID: id, OK: false, Error: "节点不存在"}
+				return
+			}
+			res := result{ID: n.ID, Name: n.Name, IP: n.IP}
+			if n.IP == "" {
+				res.Error = "节点还没上报 IP"
+				results[i] = res
+				return
+			}
+			cred := a.store.CredByIP(n.IP)
+			if cred == nil || cred.Password == "" {
+				res.Error = "没有这台的 SSH 密码：之前用「添加服务器」装过才会记住"
+				results[i] = res
+				return
+			}
+			port := cred.Port
+			if port <= 0 {
+				port = 22
+			}
+			out, fp, err := runNodeUpdate(sshTarget{
+				Host: n.IP, Port: port, User: cred.User,
+				Pass: cred.Password, HostKey: cred.HostKey,
+			}, 60*time.Second)
+			res.Output = out
+			if err != nil {
+				res.Error = err.Error()
+				log.Printf("节点更新失败 node %d (%s): %v", n.ID, n.Name, err)
+			} else {
+				res.OK = true
+				log.Printf("节点更新完成 node %d (%s)", n.ID, n.Name)
+				// 指纹可能变了（重装过），顺手更新
+				if fp != "" && fp != cred.HostKey {
+					c := *cred
+					c.HostKey = fp
+					_, _ = a.store.SaveCred(c)
+				}
+			}
+			results[i] = res
+		}(i, id)
+	}
+	wg.Wait()
+
+	okCount := 0
+	for _, r := range results {
+		if r.OK {
+			okCount++
+		}
+	}
+	writeJSON(w, 200, map[string]any{
+		"results": results,
+		"ok":      okCount,
+		"failed":  len(results) - okCount,
+		"target":  NodeStamp, // 面板里嵌的节点版本，更新完应该变成这个
+	})
 }
 
 // testNotify 发一条测试消息，验证企业微信配置（尤其 IP 白名单）是否通。

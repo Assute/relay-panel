@@ -865,6 +865,11 @@ function viewNodes(){
       <button class="ghost" onclick="dlgServer()">${I.plus} 添加服务器</button>
       <button class="primary" onclick="dlgNode()">${I.plus} 添加节点</button>
     </div>
+    <div class="toolbar" id="nodebatchbar" style="display:none;background:var(--accsoft)">
+      <span class="sm">已选 <b id="nodeselcnt">0</b> 台</span>
+      <button onclick="batchUpdateNodes()">${I.sync} 更新选中</button>
+      <div class="sp"></div>
+    </div>
     <div class="bd flush">
       <table><thead><tr>
         <th style="width:38px"><input type="checkbox" onchange="selAll(this,'node')"></th>
@@ -880,6 +885,8 @@ function viewNodes(){
       </tr></thead><tbody>
       ${S.nodes.length?S.nodes.map(x=>{
         const n=x.node, isCur=S.cur.current_node===n.id;
+        const nodeTarget = (S.settings||{}).node_stamp || '';
+        const outdate = n.ip && nodeTarget && n.agent_stamp !== nodeTarget;
         return `<tr data-node="${n.id}">
           <td><input type="checkbox" data-sel="node" data-id="${n.id}" onchange="selOne(this)"></td>
           <td class="dim mono">${n.sort_order}</td>
@@ -897,6 +904,7 @@ function viewNodes(){
           <td data-f="usage">${usageCell(x)}</td>
           <td class="ops">
             <button class="icon ghost" title="复制对接命令" onclick="nodeCmd(${n.id})">${I.copy}</button>
+            ${outdate?`<button class="icon ghost" title="更新到 ${esc(nodeTarget)}" onclick="updateNodes(${n.id})" style="color:var(--warn)">${I.sync}</button>`:''}
             <button class="icon ghost" title="编辑" onclick="dlgNode(${n.id})">${I.edit}</button>
             ${n.unreachable?`<button class="icon ghost" title="恢复调度（确认已能连上游）" onclick="recoverNode(${n.id})" style="color:var(--ok)">${I.refresh}</button>`:''}
             ${isCur?'':(n.ip?`<button class="icon ghost" title="切到这台" onclick="promote(${n.id})">${I.swap}</button>`:`<button class="icon ghost" disabled title="IP 未上报，无法切换">${I.swap}</button>`)}
@@ -1111,11 +1119,14 @@ function selOne(el){
   updateSelBar();
 }
 function updateSelBar(){
-  const bar = $('#batchbar'), cnt = $('#selcnt');
-  if(!bar) return;
   const n = S.sel.size;
-  bar.style.display = n>0 ? '' : 'none';
-  if(cnt) cnt.textContent = n;
+  // 规则页和节点页各有一条批量栏，同一个 S.sel 驱动
+  ['#batchbar','#nodebatchbar'].forEach(sel=>{
+    const bar = $(sel);
+    if(bar) bar.style.display = n>0 ? '' : 'none';
+  });
+  const cnt = $('#selcnt');    if(cnt) cnt.textContent = n;
+  const ncnt = $('#nodeselcnt'); if(ncnt) ncnt.textContent = n;
 }
 function filterRows(){
   const q = ($('#q')?.value||'').trim().toLowerCase();
@@ -1552,6 +1563,41 @@ function showInstallResult(r){
     <pre style="max-height:320px;overflow:auto;background:var(--hover);border:1px solid var(--line);
       border-radius:8px;padding:10px;font-size:11.5px;line-height:1.6;white-space:pre-wrap">${esc((r&&r.output)||'(没有输出)')}</pre>
     ${r&&r.error?`<div class="hint" style="color:var(--err)">${esc(r.error)}</div>`:''}
+  `, `<button class="primary" onclick="closeDlg()">知道了</button>`);
+}
+
+// 一键更新：把面板里嵌的 node 推到节点上重启。
+// 只换程序，配置、凭证、流量累计都不动。
+async function updateNodes(ids){
+  const list = Array.isArray(ids) ? ids : [ids];
+  if(!list.length) return;
+  const target = (S.settings||{}).node_stamp || '最新版';
+  if(!confirm(`把 ${list.length} 台节点更新到 ${target}？\n\n只替换程序，配置和本周期流量都不动，服务会重启约 3 秒。\n需要这台服务器的 SSH 密码（用「添加服务器」装过的才有）。`)) return;
+  toast('更新中，别关页面…');
+  try{
+    const r = await api('POST','/api/nodes/update', {ids:list});
+    S.sel.clear();
+    await reload(); render();
+    showUpdateResult(r);
+  }catch(e){ alert(e.message); }
+}
+
+function batchUpdateNodes(){ updateNodes([...S.sel]); }
+
+function showUpdateResult(r){
+  const ok = r.ok||0, bad = r.failed||0;
+  modal(`更新结果：成功 ${ok} 台${bad?`，失败 ${bad} 台`:''}`, `
+    <div class="hint" style="margin-top:0">目标版本 <span class="mono">${esc(r.target||'')}</span>。
+      节点每 15 秒上报一次，等一会儿刷新就能看到版本号变成它。</div>
+    ${(r.results||[]).map(x=>`
+      <div style="border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px">
+        <div><b>${esc(x.name||('#'+x.id))}</b>
+          <span class="dim sm mono">${esc(x.ip||'')}</span>
+          <span class="tag ${x.ok?'t-ok':'t-err'}" style="margin-left:6px">${x.ok?'成功':'失败'}</span></div>
+        ${x.error?`<div class="sm" style="color:var(--err);margin-top:6px">${esc(x.error)}</div>`:''}
+        ${x.output?`<pre style="margin:8px 0 0;max-height:150px;overflow:auto;background:var(--hover);
+          border:1px solid var(--line);border-radius:6px;padding:8px;font-size:11px;line-height:1.5;white-space:pre-wrap">${esc(x.output)}</pre>`:''}
+      </div>`).join('')}
   `, `<button class="primary" onclick="closeDlg()">知道了</button>`);
 }
 

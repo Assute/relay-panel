@@ -135,3 +135,101 @@ func pushBinary(client *ssh.Client, data []byte, dest string) error {
 	}
 	return nil
 }
+
+// updateScript 只换二进制，配置和账本一律不碰。
+//
+// 和安装脚本的区别就在这：安装要重写 /etc/relay/config.json、要清
+// /var/lib/relay/key（那是重新注册）；更新是「同一个节点换新程序」，
+// 凭证、累计用量、网卡状态都得留着，否则等于把账抹了重来。
+const updateScript = `#!/bin/bash
+set -euo pipefail
+trap 'echo "[错误] 第 $LINENO 行失败: $BASH_COMMAND" >&2' ERR
+
+BIN=/usr/local/bin/relay-node
+if [ ! -s /tmp/relay-node.bin ]; then
+  echo "没有收到新二进制" >&2
+  exit 1
+fi
+SZ=$(wc -c < /tmp/relay-node.bin)
+echo "[1/3] 收到新二进制（${SZ} 字节）"
+
+if systemctl is-active --quiet relay-node 2>/dev/null; then
+  echo "[2/3] 停止 relay-node"
+  systemctl stop relay-node
+else
+  echo "[2/3] relay-node 没在跑，直接替换"
+fi
+mv -f /tmp/relay-node.bin "$BIN"
+chmod +x "$BIN"
+
+echo "[3/3] 启动"
+systemctl start relay-node
+sleep 2
+if systemctl is-active --quiet relay-node; then
+  echo "更新完成，当前版本："
+  journalctl -u relay-node -n 6 --no-pager | grep -m1 '节点端版本' || true
+else
+  echo "启动失败，最近日志：" >&2
+  journalctl -u relay-node -n 20 --no-pager >&2 || true
+  exit 1
+fi
+`
+
+// runNodeUpdate 把面板里的节点二进制推到目标机并重启服务。
+func runNodeUpdate(t sshTarget, timeout time.Duration) (output, hostKey string, err error) {
+	var fp string
+	cfg := &ssh.ClientConfig{
+		User:    t.User,
+		Auth:    []ssh.AuthMethod{ssh.Password(t.Pass)},
+		Timeout: 15 * time.Second,
+		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			fp = ssh.FingerprintSHA256(key)
+			if t.HostKey != "" && t.HostKey != fp {
+				return fmt.Errorf("主机指纹变了（记录的 %s，实际 %s），可能不是原来那台", t.HostKey, fp)
+			}
+			return nil
+		},
+	}
+
+	addr := net.JoinHostPort(t.Host, strconv.Itoa(t.Port))
+	client, err := ssh.Dial("tcp", addr, cfg)
+	if err != nil {
+		return "", fp, fmt.Errorf("连接 %s 失败: %w", addr, err)
+	}
+	defer client.Close()
+
+	arch := detectArch(client)
+	bin := nodeBinary(arch)
+	if bin == nil {
+		return "", fp, fmt.Errorf("面板里没有 %s 的节点二进制，无法更新（构建时要跑 make assets）", arch)
+	}
+	if err := pushBinary(client, bin, "/tmp/relay-node.bin"); err != nil {
+		return "", fp, fmt.Errorf("推送二进制失败: %w", err)
+	}
+
+	sess, err := client.NewSession()
+	if err != nil {
+		return "", fp, fmt.Errorf("打开会话失败: %w", err)
+	}
+	defer sess.Close()
+
+	var buf bytes.Buffer
+	sess.Stdout = &buf
+	sess.Stderr = &buf
+	sess.Stdin = strings.NewReader(updateScript)
+
+	done := make(chan error, 1)
+	go func() { done <- sess.Run("bash -s") }()
+
+	select {
+	case runErr := <-done:
+		out := buf.String()
+		if runErr != nil {
+			return out, fp, fmt.Errorf("更新脚本退出异常: %w", runErr)
+		}
+		return out, fp, nil
+	case <-time.After(timeout):
+		_ = sess.Close()
+		return buf.String(), fp, fmt.Errorf("更新超时（%s）", timeout)
+	}
+}

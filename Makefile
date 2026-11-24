@@ -4,7 +4,7 @@
 # 用来确认「我换的二进制到底生效了没」。想固定版本就 make STAMP=v1.0 all
 STAMP ?= $(shell date +%Y%m%d-%H%M%S 2>/dev/null || echo dev)
 
-PANEL_LD := -s -w -X relay/internal/panel.BuildStamp=$(STAMP)
+PANEL_LD := -s -w -X relay/internal/panel.BuildStamp=$(STAMP) -X relay/internal/panel.NodeStamp=$(STAMP)
 NODE_LD  := -s -w -X relay/internal/node.BuildStamp=$(STAMP)
 
 # 默认：先把节点二进制嵌进面板，再出面板 + 三架构节点
