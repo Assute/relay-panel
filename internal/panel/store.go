@@ -56,6 +56,10 @@ type Group struct {
 	ManualLockUntil int64 `json:"manual_lock_until"`
 	ResetDay        int   `json:"reset_day"`
 
+	// LowNodes 「可用节点只剩两台」的告警已经发过了。
+	// 恢复到三台以上才复位，避免每 30 秒巡检都重复报同一条。
+	LowNodes bool `json:"low_nodes"`
+
 	CreatedAt int64 `json:"created_at"`
 }
 
@@ -206,6 +210,16 @@ type Store struct {
 	mu   sync.RWMutex
 	path string
 	db   Ball
+	// onAlert 记完告警后回调，用来推企业微信。
+	// 只在锁外调用，回调里可以安全地再查 store。
+	onAlert func(Alert)
+}
+
+// SetAlertHook 设置告警回调。传 nil 表示不推送。
+func (s *Store) SetAlertHook(fn func(Alert)) {
+	s.mu.Lock()
+	s.onAlert = fn
+	s.mu.Unlock()
 }
 
 func OpenStore(path string) (*Store, error) {
@@ -1045,6 +1059,22 @@ func (s *Store) SetStatus(nodeID int64, st string) {
 	}
 }
 
+// SetGroupLowNodes 记下「只剩两台」这个告警发过没有
+func (s *Store) SetGroupLowNodes(groupID int64, v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.db.Groups {
+		if s.db.Groups[i].ID == groupID {
+			if s.db.Groups[i].LowNodes == v {
+				return
+			}
+			s.db.Groups[i].LowNodes = v
+			_ = s.save()
+			return
+		}
+	}
+}
+
 // LockGroup 手动切换后锁定一段时间，期间调度器不自动切走
 func (s *Store) LockGroup(groupID int64, d time.Duration) {
 	s.mu.Lock()
@@ -1097,22 +1127,31 @@ func (s *Store) Audit(groupID, from, to int64, reason string) {
 
 func (s *Store) Alert(groupID, nodeID int64, level, msg string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	// 同内容 10 分钟内不重复
 	for i := len(s.db.Alerts) - 1; i >= 0 && i > len(s.db.Alerts)-20; i-- {
 		a := s.db.Alerts[i]
 		if a.Message == msg && a.NodeID == nodeID && time.Now().Unix()-a.At < 600 {
+			s.mu.Unlock()
 			return
 		}
 	}
-	s.db.Alerts = append(s.db.Alerts, Alert{
+	a := Alert{
 		ID: s.nextID(), GroupID: groupID, NodeID: nodeID,
 		Level: level, Message: msg, At: time.Now().Unix(),
-	})
+	}
+	s.db.Alerts = append(s.db.Alerts, a)
 	if len(s.db.Alerts) > 1000 {
 		s.db.Alerts = s.db.Alerts[len(s.db.Alerts)-1000:]
 	}
 	_ = s.save()
+	hook := s.onAlert
+	s.mu.Unlock()
+
+	// 推送放到锁外：企微那边超时不能把整个面板卡住，
+	// 回调里也可能反过来查 store（查分组名），持锁调就是死锁。
+	if hook != nil {
+		hook(a)
+	}
 }
 
 func (s *Store) AckAlert(id int64) {

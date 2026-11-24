@@ -65,6 +65,21 @@ func main() {
 	sched := panel.NewScheduler(store, dns, cnf)
 	api := panel.NewAPI(store, cnf, sess, dns, sched)
 
+	// 告警顺手推企业微信。没配就当没有，面板里照常记。
+	notifier := panel.NewNotifier(cnf)
+	go notifier.Run()
+	api.SetNotifier(notifier)
+	store.SetAlertHook(func(al panel.Alert) {
+		name := ""
+		if g := store.Group(al.GroupID); g != nil {
+			name = g.Name
+		}
+		notifier.Push(panel.FormatAlert(al, name))
+	})
+	if notifier.Enabled() {
+		log.Printf("告警推送: 企业微信已配置（应用 %s，接收者 %s）", cnf.WecomAgentID, cnf.WecomToUser)
+	}
+
 	go sched.Run()
 
 	srv := &http.Server{

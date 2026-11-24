@@ -983,6 +983,35 @@ function viewSettings(){
   </div>
 
   <div class="card" style="margin-top:16px">
+    <div class="hd"><h3>告警推送 · 企业微信</h3>
+      <div class="sp"></div>
+      <span class="tag ${st.wecom_enabled?'t-ok':'t-grey'}">${st.wecom_enabled?'已启用':'未配置'}</span>
+    </div>
+    <div class="bd">
+      <label>企业 ID</label>
+      <input id="s_corpid" type="text" value="${esc(st.wecom_corpid||'')}" placeholder="ww开头的那串">
+      <label>应用 Secret</label>
+      <input id="s_secret" type="text" autocomplete="off"
+        placeholder="${st.wecom_secret_set ? esc(st.wecom_secret_mask) + '（已配置，留空则不修改）' : '应用的 Secret'}">
+      <label>应用 AgentId</label>
+      <input id="s_agentid" type="text" value="${esc(st.wecom_agentid||'')}" placeholder="1000002">
+      <label>接收者</label>
+      <input id="s_touser" type="text" value="${esc(st.wecom_touser||'')}" placeholder="1 或 @all">
+      <div class="hint">
+        企业微信管理后台 → 应用管理 → 自建应用 → 拿到 AgentId / Secret；<br>
+        「企业可信IP」里必须加上<b>面板所在机器的公网 IP</b>，否则会报 60020，代码改不了这个。<br>
+        接收者是成员账号，多个用 <span class="mono">|</span> 分隔，<span class="mono">@all</span> 表示全员。
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button onclick="testNotify()">发送测试</button>
+        <button class="primary" onclick="saveSettings()">保存</button>
+      </div>
+      <div id="s_wmsg" class="sm" style="margin-top:12px;min-height:20px"></div>
+      ${st.wecom_last_error?`<div class="hint" style="color:var(--err)">上次推送失败：${esc(st.wecom_last_error)}</div>`:''}
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
     <div class="hd"><h3>数据文件</h3><div class="sp"></div>
       <span class="dim sm">备份直接复制这个文件</span></div>
     <div class="bd"><span class="mono dim">${esc(st.db_path||'')}</span></div>
@@ -1011,6 +1040,11 @@ async function saveSettings(){
   const body = {};
   if(tok) body.cloudflare_token = tok;
   if(url) body.public_url = url;
+  // 企业微信四项：有输入框就一并提交（空串表示清空，方便关掉推送）
+  if($('#s_corpid'))  body.wecom_corpid  = ($('#s_corpid').value||'').trim();
+  if($('#s_secret'))  { const v = ($('#s_secret').value||'').trim(); if(v) body.wecom_secret = v; }
+  if($('#s_agentid')) body.wecom_agentid = ($('#s_agentid').value||'').trim();
+  if($('#s_touser'))  body.wecom_touser  = ($('#s_touser').value||'').trim();
   if(!Object.keys(body).length){ setMsg('#s_msg','没有改动','' ); return; }
   try{
     await api('POST','/api/settings', body);
@@ -1020,6 +1054,14 @@ async function saveSettings(){
     await reload(); render();
     toast('设置已保存');
   }catch(e){ setMsg('#s_msg', e.message, false); }
+}
+
+async function testNotify(){
+  setMsg('#s_wmsg','发送中…','');
+  try{
+    await api('POST','/api/notify/test');
+    setMsg('#s_wmsg','✅ 已发出，去企业微信看有没有收到', true);
+  }catch(e){ setMsg('#s_wmsg','❌ '+e.message, false); }
 }
 
 async function verifyToken(){

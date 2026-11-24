@@ -23,6 +23,13 @@ type Config struct {
 	NodeBinURL      string `json:"node_bin_url"`
 	ProbeNoPort     bool   `json:"probe_no_port"`
 
+	// 企业微信告警推送。四项都填了才会真的发，
+	// 缺一项就当没配，面板内照常记告警不推送。
+	WecomCorpID  string `json:"wecom_corpid"`   // 企业 ID
+	WecomSecret  string `json:"wecom_secret"`   // 应用 Secret
+	WecomAgentID string `json:"wecom_agentid"`  // 应用 AgentId
+	WecomToUser  string `json:"wecom_touser"`   // 接收人，@all 表示全企业
+
 	Path string `json:"-"` // 配置文件自身路径，Save 用
 
 	mu sync.Mutex `json:"-"`

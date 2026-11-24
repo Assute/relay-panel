@@ -7,6 +7,7 @@
 package panel
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -177,6 +178,31 @@ func (s *Scheduler) tickGroup(g *Group) {
 
 	cur := s.store.CurrentNode(g.ID)
 
+	// 可用节点只剩两台：提前预警，别等到最后一台用完才发现没得切。
+	// 只看本地状态（usable + 心跳），不在这里发 TCP 探测，
+	// 那是 probeRTTs 的活，挂在每次巡检上会把 30 秒周期撑爆。
+	now := time.Now().Unix()
+	avail := 0
+	for i := range nodes {
+		n := &nodes[i]
+		if !usable(*n) || n.LastSeen == 0 {
+			continue
+		}
+		if now-n.LastSeen > heartbeatTimeout {
+			continue
+		}
+		avail++
+	}
+	if avail <= 2 {
+		if !g.LowNodes {
+			s.store.Alert(g.ID, 0, "warn",
+				fmt.Sprintf("分组「%s」可用节点只剩 %d 台，用完就没得切了", g.Name, avail))
+			s.store.SetGroupLowNodes(g.ID, true)
+		}
+	} else if g.LowNodes {
+		s.store.SetGroupLowNodes(g.ID, false)
+	}
+
 	// 1) 当前节点自检报「上游不通」：最先处理。
 	// 这种情况机器还活着、心跳照发、网卡还在涨，只有节点自己拨号才知道，
 	// 所以不能等 isDead——那永远不会成立。
@@ -202,8 +228,14 @@ func (s *Scheduler) tickGroup(g *Group) {
 	}
 
 	// 3) 用量到阈值：正常轮换
-	used := cur.UsedBytes
-	if float64(used) < float64(cur.QuotaBytes)*switchAt(cur, g) {
+	//
+	// 配额 0 表示不限量，这种节点永远不该因为「用量」被切走。
+	// 原来直接比 used < quota*ratio，quota=0 时变成 0 < 0 = false，
+	// 于是每一轮都被判成「到线了」——不限量的节点会被反复切来切去。
+	if cur.QuotaBytes <= 0 {
+		return
+	}
+	if float64(cur.UsedBytes) < float64(cur.QuotaBytes)*switchAt(cur, g) {
 		return
 	}
 	// 用户手工切过来的，锁定期内不自动切走

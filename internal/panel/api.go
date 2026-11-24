@@ -14,16 +14,20 @@ import (
 )
 
 type API struct {
-	store *Store
-	cnf   *Config
-	sess  *SessionStore
-	dns   DNSProvider
-	sched *Scheduler
+	store    *Store
+	cnf      *Config
+	sess     *SessionStore
+	dns      DNSProvider
+	sched    *Scheduler
+	notifier *Notifier
 }
 
 func NewAPI(s *Store, c *Config, sess *SessionStore, dns DNSProvider, sched *Scheduler) *API {
 	return &API{store: s, cnf: c, sess: sess, dns: dns, sched: sched}
 }
+
+// SetNotifier 挂上告警推送器（设置页的「发送测试」用它）
+func (a *API) SetNotifier(n *Notifier) { a.notifier = n }
 
 // kick 让调度器立刻巡检一次，不用等下一个 30 秒周期
 func (a *API) kick() {
@@ -75,6 +79,7 @@ func (a *API) Routes() http.Handler {
 
 	mux.Handle("GET /api/settings", a.auth(http.HandlerFunc(a.getSettings)))
 	mux.Handle("POST /api/settings", a.auth(http.HandlerFunc(a.saveSettings)))
+	mux.Handle("POST /api/notify/test", a.auth(http.HandlerFunc(a.testNotify)))
 	mux.Handle("POST /api/dns/verify", a.auth(http.HandlerFunc(a.verifyDNS)))
 	mux.Handle("POST /api/dns/zones", a.auth(http.HandlerFunc(a.listZones)))
 	mux.Handle("POST /api/groups/{id}/dns-test", a.auth(http.HandlerFunc(a.testGroupDNS)))
@@ -740,19 +745,33 @@ func maskToken(t string) string {
 
 func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 	tok := a.cnf.Token()
-	writeJSON(w, 200, map[string]any{
+	resp := map[string]any{
 		"build":                 BuildStamp,
 		"public_url":            a.cnf.PublicURL,
 		"db_path":               a.cnf.DB,
 		"cloudflare_token_set":  tok != "",
 		"cloudflare_token_mask": maskToken(tok),
-	})
+		"wecom_corpid":          a.cnf.WecomCorpID,
+		"wecom_agentid":         a.cnf.WecomAgentID,
+		"wecom_touser":          a.cnf.WecomToUser,
+		"wecom_secret_set":      a.cnf.WecomSecret != "",
+		"wecom_secret_mask":     maskToken(a.cnf.WecomSecret),
+	}
+	if a.notifier != nil {
+		resp["wecom_enabled"] = a.notifier.Enabled()
+		resp["wecom_last_error"] = a.notifier.LastError()
+	}
+	writeJSON(w, 200, resp)
 }
 
 func (a *API) saveSettings(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		CloudflareToken *string `json:"cloudflare_token"`
 		PublicURL       *string `json:"public_url"`
+		WecomCorpID     *string `json:"wecom_corpid"`
+		WecomSecret     *string `json:"wecom_secret"`
+		WecomAgentID    *string `json:"wecom_agentid"`
+		WecomToUser     *string `json:"wecom_touser"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "请求格式错误"})
@@ -766,12 +785,40 @@ func (a *API) saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.PublicURL != nil {
 		a.cnf.PublicURL = strings.TrimRight(strings.TrimSpace(*in.PublicURL), "/")
-		if err := a.cnf.Save(); err != nil {
-			writeJSON(w, 500, map[string]string{"error": "保存配置失败: " + err.Error()})
-			return
-		}
+	}
+	// 企业微信：传空串表示清空，不传表示不动
+	if in.WecomCorpID != nil {
+		a.cnf.WecomCorpID = strings.TrimSpace(*in.WecomCorpID)
+	}
+	if in.WecomSecret != nil {
+		a.cnf.WecomSecret = strings.TrimSpace(*in.WecomSecret)
+	}
+	if in.WecomAgentID != nil {
+		a.cnf.WecomAgentID = strings.TrimSpace(*in.WecomAgentID)
+	}
+	if in.WecomToUser != nil {
+		a.cnf.WecomToUser = strings.TrimSpace(*in.WecomToUser)
+	}
+	if err := a.cnf.Save(); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "保存配置失败: " + err.Error()})
+		return
 	}
 	a.kick() // token 变了，让调度器重新试一次
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// testNotify 发一条测试消息，验证企业微信配置（尤其 IP 白名单）是否通。
+func (a *API) testNotify(w http.ResponseWriter, r *http.Request) {
+	if a.notifier == nil {
+		writeJSON(w, 500, map[string]string{"error": "通知器没初始化"})
+		return
+	}
+	msg := fmt.Sprintf("【中转面板】测试消息\n如果你收到这条，说明告警推送已通。\n%s",
+		time.Now().Format("2006-01-02 15:04:05"))
+	if err := a.notifier.Send(msg); err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
