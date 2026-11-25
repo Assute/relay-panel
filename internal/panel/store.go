@@ -88,6 +88,10 @@ type Node struct {
 	// NeedAlign 下一次心跳只对齐起点、不计用量。
 	// 换网卡或改计费口径后节点端换了计数器，新计数器的当前值不能算成本周期用量。
 	NeedAlign bool `json:"need_align"`
+	// CycleStartPending 面板要求把新起点告诉节点，下一跳带上去就清掉。
+	// 和 NeedAlign 的区别：NeedAlign 是「把当前计数器当起点」，
+	// Pending 是「用我给的这个数当起点」。
+	CycleStartPending bool `json:"cycle_start_pending"`
 	// AgentStamp 节点端二进制标识，面板上直接能看到节点跑的是哪个构建，
 	// 不用登机器看 journalctl。
 	AgentStamp string `json:"agent_stamp"`
@@ -900,6 +904,9 @@ func (s *Store) ResetNodeKey(id int64) *Node {
 type Beat struct {
 	NodeID   int64
 	NicAcc   int64
+	// CycleStart 节电自己记着的「本周期起点」。
+	// 面板删掉节点记录再加回来时，靠它把用量接上，而不是从 0 重新算。
+	CycleStart int64
 	RelayAcc int64
 	Version  int64
 	Agent    string
@@ -910,7 +917,7 @@ type Beat struct {
 	DiskPct  int
 }
 
-func (s *Store) AcceptBeat(b Beat) (wantVersion int64) {
+func (s *Store) AcceptBeat(b Beat) (wantVersion int64, setCycle *int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.db.Nodes {
@@ -925,13 +932,18 @@ func (s *Store) AcceptBeat(b Beat) (wantVersion int64) {
 		// 保证升级这一刻面板上的数字不跳。
 		// 全新节点（还没上报过，两个值都是 0）：第一次心跳只对齐起点。
 		if !n.AccountMigrated {
-			if n.NicReported > 0 || n.UsedBytes > 0 {
+			switch {
+			case n.NicReported > 0 || n.UsedBytes > 0:
 				start := n.NicReported - n.UsedBytes
 				if start < 0 {
 					start = 0
 				}
 				n.CycleStartNic = start
-			} else {
+			case b.CycleStart > 0 && b.CycleStart <= nicAcc:
+				// 节点自己存着本周期起点（删了记录重加、或者面板换过库）。
+				// 直接接上，别对齐——对齐就等于把这台的用量清零。
+				n.CycleStartNic = b.CycleStart
+			default:
 				n.NeedAlign = true
 			}
 			n.AccountMigrated = true
@@ -939,15 +951,36 @@ func (s *Store) AcceptBeat(b Beat) (wantVersion int64) {
 
 		// 首跳、或刚换网卡/改口径：把当前位置当周期起点。
 		// 不能从 0 起算，否则网卡（或新计数器）开机以来跑了多少就一次性算多少。
-		if n.NeedAlign {
+		//
+		// 顺序很重要：节点自己存着「本周期起点」（/var/lib/relay/nic.state 第三行），
+		// 只要它报上来的值合法就优先采信。这样删掉节点、重新添加回来，
+		// 用量不会归零——起点不在面板手里，在节点身上。
+		switch {
+		case n.CycleStartPending:
+			// 面板刚要求重置：用面板给的值，并让节点抄走
+			setCycle = i64ptr(n.CycleStartNic)
+			n.CycleStartPending = false
+		case n.NeedAlign:
+			// 面板主动要求重来（周期重置、改口径、计数器归零）
 			n.CycleStartNic = nicAcc
 			n.NeedAlign = false
+			setCycle = i64ptr(nicAcc)
+		case b.CycleStart > 0 && b.CycleStart <= nicAcc:
+			// 节点自己记着的起点最可信：删了记录重加、
+			// 换了面板、改了库，都靠它把用量接回去。
+			n.CycleStartNic = b.CycleStart
+		case n.CycleStartNic > 0 && n.CycleStartNic <= nicAcc:
+			// 节点头脑空着（老版本没这个字段），把我们记的告诉它
+			setCycle = i64ptr(n.CycleStartNic)
 		}
 
 		// 节点计数器归零（重装 / 删了 state 文件 / 换了计数器）：
 		// 起点跟着归零，从 0 重新开始记，不倒扣也不跳涨。
+		// 计数器归零了（重装系统、换了台机器、手删了 state 文件）：
+		// 旧起点比现在的累计还大，说明不是同一个计数器，只能从现在的值重开。
 		if nicAcc < n.CycleStartNic {
 			n.CycleStartNic = 0
+			setCycle = i64ptr(0)
 		}
 
 		n.NicReported = nicAcc
@@ -974,9 +1007,9 @@ func (s *Store) AcceptBeat(b Beat) (wantVersion int64) {
 			n.Status = StatusStandby
 		}
 		_ = s.save()
-		return n.ConfigVersion
+		return n.ConfigVersion, setCycle
 	}
-	return 0
+	return 0, nil
 }
 
 // ResetNodeAccounting 把节点这侧的账归零。
@@ -991,6 +1024,7 @@ func (s *Store) ResetNodeAccounting(nodeID int64) {
 			s.db.Nodes[i].NicReported = 0
 			s.db.Nodes[i].UsedBytes = 0
 			s.db.Nodes[i].NeedAlign = true
+			s.db.Nodes[i].CycleStartPending = false
 			s.db.Nodes[i].LastCycleAt = time.Now().Unix()
 			_ = s.save()
 			return
@@ -1174,6 +1208,10 @@ func (s *Store) ResetNodeCycle(nodeID int64) {
 			s.db.Nodes[i].CycleStartNic = s.db.Nodes[i].NicReported
 			s.db.Nodes[i].UsedBytes = 0
 			s.db.Nodes[i].AccountMigrated = true
+			// 节点身上还存着旧起点，不告诉它就会被顶回去。
+			// 用 Pending 而不是 NeedAlign：清零那一刻就把起点定在当前计数器，
+			// 而不是等下一跳再对齐（那样会把清零后新涨的量也吞掉）。
+			s.db.Nodes[i].CycleStartPending = true
 			s.db.Nodes[i].LastCycleAt = time.Now().Unix()
 			if s.db.Nodes[i].Status == StatusExhausted {
 				s.db.Nodes[i].Status = StatusStandby
@@ -1188,3 +1226,6 @@ func (s *Store) ResetNodeCycle(nodeID int64) {
 func (s *Store) CycleReset(nodeID int64) {
 	s.ResetNodeCycle(nodeID)
 }
+
+// i64ptr 取个指针，用来区分「不动」（nil）和「设成 0」（清掉起点）。
+func i64ptr(v int64) *int64 { return &v }

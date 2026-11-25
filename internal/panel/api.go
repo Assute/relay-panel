@@ -1234,6 +1234,7 @@ type beatReq struct {
 	Fingerprint string `json:"fingerprint"`
 	Iface       string `json:"iface"`
 	NicAcc      int64  `json:"nic_acc"`
+	CycleStart  int64  `json:"cycle_start"`
 	RelayAcc    int64  `json:"relay_acc"`
 	Version     int64  `json:"version"`
 	// Agent 节点端构建标识，面板上直接显示，省得每次都登机器看日志
@@ -1264,6 +1265,8 @@ type beatResp struct {
 	SessionKey string       `json:"session_key,omitempty"`
 	Iface      string       `json:"iface,omitempty"`
 	BillMode   string       `json:"bill_mode,omitempty"`
+	// CycleStart 非 0 表示「把本周期起点改成这个值」，节点会写进自己的 state
+	CycleStart *int64        `json:"cycle_start,omitempty"`
 	ProbeTarget string      `json:"probe_target"`
 	Config     *agentConfig `json:"config,omitempty"`
 }
@@ -1400,17 +1403,18 @@ func (a *API) agentBeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	before := a.store.Node(nodeID)
-	ver := a.store.AcceptBeat(Beat{
-		NodeID:   nodeID,
-		NicAcc:   in.NicAcc,
-		RelayAcc: in.RelayAcc,
-		Version:  in.Version,
-		Agent:    in.Agent,
-		RxBps:    in.RxBps,
-		TxBps:    in.TxBps,
-		CPUPct:   in.CPUPct,
-		MemPct:   in.MemPct,
-		DiskPct:  in.DiskPct,
+	ver, setCycle := a.store.AcceptBeat(Beat{
+		NodeID:     nodeID,
+		NicAcc:     in.NicAcc,
+		CycleStart: in.CycleStart,
+		RelayAcc:   in.RelayAcc,
+		Version:    in.Version,
+		Agent:      in.Agent,
+		RxBps:      in.RxBps,
+		TxBps:      in.TxBps,
+		CPUPct:     in.CPUPct,
+		MemPct:     in.MemPct,
+		DiskPct:    in.DiskPct,
 	})
 	if before != nil && in.Agent != "" && before.AgentStamp != in.Agent {
 		log.Printf("node %d (%s): 节点端 %q -> %q", nodeID, before.Name, before.AgentStamp, in.Agent)
@@ -1420,6 +1424,10 @@ func (a *API) agentBeat(w http.ResponseWriter, r *http.Request) {
 	if fresh {
 		resp.SessionKey = newKey
 	}
+	// 面板算出的周期起点，让节点抄到自己的 state 里。
+	// 下次节点被删了重加，它把起点报回来，用量就不用从 0 重算。
+	// nil = 不动，传 0 表示清掉（计数器归零过）。
+	resp.CycleStart = setCycle
 	n := a.store.Node(nodeID)
 	if n == nil {
 		writeJSON(w, 410, beatResp{OK: false, Err: "node_gone"})

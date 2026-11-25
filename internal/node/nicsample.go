@@ -72,7 +72,10 @@ type NicMeter struct {
 	base  uint64
 	acc   uint64
 	ready bool // 基准是否已对齐；换网卡/换口径后置 false
-	state string
+	// cycleStart 本周期起点（面板用 acc-cycleStart 算用量）。
+	// 存在节点自己身上，面板删了节点记录再加回来也能接着算。
+	cycleStart int64
+	state      string
 
 	// 实时速率用：上一次的原始计数器值和采样时刻。
 	// 累计量和速率是两回事，速率永远取 rx/tx 原始值，不受计费口径影响。
@@ -268,26 +271,61 @@ func (n *NicMeter) Restore() {
 	if len(lines) > 1 {
 		mode = strings.TrimSpace(lines[1])
 	}
+	// `cycleStart` 是本周期起点，跟着 acc 一起存。
+	// 面板删掉节点记录再加回来时，靠它把用量接上，而不是从 0 重新算。
+	// 老格式没有这一行，读出来是 0，面板会当成「没记过」重新对齐。
+	cycleStart := int64(0)
+	if len(lines) > 2 {
+		if v, err := strconv.ParseInt(strings.TrimSpace(lines[2]), 10, 64); err == nil {
+			cycleStart = v
+		}
+	}
 	n.mu.Lock()
 	n.acc, n.base = v, 0
 	n.mode = mode
+	n.cycleStart = cycleStart
 	n.ready = false
 	n.mu.Unlock()
 }
 
-// Persist 把累计值和计费口径一起落盘。
-// 格式：第一行字节数，第二行口径（tx/rx/both）。
+// CycleStart 本周期起点。0 表示这台还没被面板对齐过。
+func (n *NicMeter) CycleStart() int64 {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.cycleStart
+}
+
+// SetCycleStart 面板下发了新的周期起点（首次对齐、周期重置、改口径）。
+func (n *NicMeter) SetCycleStart(v int64) {
+	if v < 0 {
+		return
+	}
+	n.mu.Lock()
+	changed := n.cycleStart != v
+	n.cycleStart = v
+	n.mu.Unlock()
+	if changed {
+		_ = n.Persist()
+	}
+}
+
+// Persist 把累计值、计费口径、周期起点一起落盘。
+// 格式：第一行字节数，第二行口径（tx/rx/both），第三行本周期起点。
 func (n *NicMeter) Persist() error {
 	n.mu.Lock()
 	v := n.acc
 	mode := n.mode
+	cycle := n.cycleStart
 	path := n.state
 	n.mu.Unlock()
 	_ = os.MkdirAll(dirOf(path), 0o755)
 	body := strconv.FormatUint(v, 10)
 	if mode != "" {
 		body += "\n" + mode
+	} else {
+		body += "\n"
 	}
+	body += "\n" + strconv.FormatInt(cycle, 10)
 	return os.WriteFile(path, []byte(body), 0o600)
 }
 

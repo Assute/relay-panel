@@ -175,3 +175,70 @@ func TestUpdateNodeKeepsLedger(t *testing.T) {
 		t.Fatalf("编辑不应清掉构建标识")
 	}
 }
+
+// 删除节点再加回来，用量要接着算，不能从 0 重来。
+// 起点存在节点自己身上（/var/lib/relay/nic.state 第三行），心跳带上来。
+func TestReAddNodeKeepsUsage(t *testing.T) {
+	s, id := newTestStore(t)
+	n := s.Node(id)
+	const start = int64(50 << 30)  // 本周期起点 50 GiB
+	const now1 = int64(100 << 30)  // 当前累计 100 GiB
+
+	// 先跑两跳把账立起来
+	s.AcceptBeat(Beat{NodeID: id, NicAcc: now1, CycleStart: start})
+	if got := s.Node(id); got.UsedBytes != now1-start {
+		t.Fatalf("首跳用量应 %d，实际 %d", now1-start, got.UsedBytes)
+	}
+
+	// 删掉
+	if err := s.DeleteNode(id); err != nil {
+		t.Fatal(err)
+	}
+
+	// 用同一个 IP 重新加回来
+	n2, err := s.CreateNode(Node{GroupID: n.GroupID, Name: n.Name, IP: "9.9.9.9", Token: "tok2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const now2 = int64(120 << 30) // 又跑了 20 GiB
+	s.AcceptBeat(Beat{NodeID: n2.ID, NicAcc: now2, CycleStart: start})
+
+	got := s.Node(n2.ID)
+	if want := now2 - start; got.UsedBytes != want {
+		t.Fatalf("重新添加后用量应接着算 %d，实际 %d（归零了）", want, got.UsedBytes)
+	}
+}
+
+// 全新节点（节点头脑空空，没存过起点）：第一跳只对齐，不算用量
+func TestFreshNodeAlignsFirstBeat(t *testing.T) {
+	s, id := newTestStore(t)
+	const acc = int64(5 << 30)
+
+	s.AcceptBeat(Beat{NodeID: id, NicAcc: acc})
+	if got := s.Node(id); got.UsedBytes != 0 || got.CycleStartNic != acc {
+		t.Fatalf("首跳应对齐到 %d 且用量 0，实际 start=%d used=%d", acc, got.CycleStartNic, got.UsedBytes)
+	}
+
+	// 节点收到起点后下一跳带回来，用量就该从这算
+	const acc2 = int64(6 << 30)
+	s.AcceptBeat(Beat{NodeID: id, NicAcc: acc2, CycleStart: acc})
+	if got := s.Node(id); got.UsedBytes != acc2-acc {
+		t.Fatalf("第二跳用量应 %d，实际 %d", acc2-acc, got.UsedBytes)
+	}
+}
+
+// 周期重置后节点必须拿到新起点，否则它会把旧起点报回来把用量顶回去
+func TestResetTellsNodeNewStart(t *testing.T) {
+	s, id := newTestStore(t)
+	const acc = int64(80 << 30)
+	s.AcceptBeat(Beat{NodeID: id, NicAcc: acc, CycleStart: 10 << 30})
+
+	s.ResetNodeCycle(id)
+	_, setCycle := s.AcceptBeat(Beat{NodeID: id, NicAcc: acc, CycleStart: 10 << 30})
+	if setCycle == nil || *setCycle != acc {
+		t.Fatalf("重置后应下发新起点 %d，实际 %v", acc, setCycle)
+	}
+	if got := s.Node(id); got.UsedBytes != 0 {
+		t.Fatalf("重置后用量应 0，实际 %d", got.UsedBytes)
+	}
+}

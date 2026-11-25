@@ -32,14 +32,17 @@ type beatReq struct {
 	Fingerprint string `json:"fingerprint"`
 	Iface       string `json:"iface"`
 	NicAcc      int64  `json:"nic_acc"`
-	RelayAcc    int64  `json:"relay_acc"`
-	Version     int64  `json:"version"`
-	Agent       string `json:"agent"` // 构建标识，面板上直接显示
-	RxBps       int64  `json:"rx_bps"`
-	TxBps       int64  `json:"tx_bps"`
-	CPUPct      int    `json:"cpu_pct"`
-	MemPct      int    `json:"mem_pct"`
-	DiskPct     int    `json:"disk_pct"`
+	// CycleStart 本周期起点。面板删掉节点记录再加回来时靠它把用量接上，
+	// 所以这个值必须跟着 acc 一起存、一起报。
+	CycleStart int64  `json:"cycle_start"`
+	RelayAcc   int64  `json:"relay_acc"`
+	Version    int64  `json:"version"`
+	Agent      string `json:"agent"` // 构建标识，面板上直接显示
+	RxBps      int64  `json:"rx_bps"`
+	TxBps      int64  `json:"tx_bps"`
+	CPUPct     int    `json:"cpu_pct"`
+	MemPct     int    `json:"mem_pct"`
+	DiskPct    int    `json:"disk_pct"`
 }
 
 type beatResp struct {
@@ -48,6 +51,8 @@ type beatResp struct {
 	SessionKey string `json:"session_key,omitempty"`
 	Iface      string `json:"iface,omitempty"`
 	BillMode   string `json:"bill_mode,omitempty"`
+	// CycleStart 非 0 表示面板要求把本周期起点改成这个值（首次对齐 / 周期重置）
+	CycleStart *int64 `json:"cycle_start,omitempty"`
 	// ProbeTarget 每次都带（不像规则那样只在版本变化时下发）：
 	// 探测目标跟着规则走，改一条规则就该立刻换目标重测。
 	ProbeTarget string       `json:"probe_target"`
@@ -189,6 +194,7 @@ func (a *Agent) beat() error {
 		Fingerprint: a.fp,
 		Iface:       a.meter.Iface(),
 		NicAcc:      int64(nicAcc),
+		CycleStart:  a.meter.CycleStart(),
 		RelayAcc:    a.fwd.BytesRead(),
 		Version:     a.ver.Load(),
 		Agent:       BuildStamp,
@@ -232,6 +238,12 @@ func (a *Agent) beat() error {
 		} else {
 			log.Printf("注册成功，已保存凭证")
 		}
+	}
+
+	// 面板算出的周期起点：抄到自己身上，下次它记不住的时候（节点被删了重加）
+	// 还能把用量接回去。只在本值和面板给的不一样时才落盘。
+	if br.CycleStart != nil && *br.CycleStart != a.meter.CycleStart() {
+		a.meter.SetCycleStart(*br.CycleStart)
 	}
 
 	// 面板下发的网卡配置
