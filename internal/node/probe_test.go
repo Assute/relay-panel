@@ -123,3 +123,34 @@ func TestProberNoTarget(t *testing.T) {
 		t.Fatalf("没目标时不该判失败: ok=%v done=%v fails=%d", ok, done, f)
 	}
 }
+
+// 转发器要把进出两个方向分开记：商家按出向计费，
+// 混成一个总数就看不出「哪条规则吃带宽」了。
+func TestPortStatsDirections(t *testing.T) {
+	f := NewForwarder()
+	const port = 45123
+	if err := f.Sync([]Rule{{ListenPort: port, TargetHost: "127.0.0.1", TargetPort: 1}}); err != nil {
+		t.Skipf("端口 %d 占用，跳过: %v", port, err)
+	}
+	defer f.Sync(nil)
+
+	f.mu.Lock()
+	cur := f.m[port]
+	f.mu.Unlock()
+	if cur == nil {
+		t.Fatal("没建出转发器")
+	}
+	cur.rx.Add(1000)
+	cur.tx.Add(2500)
+
+	sts := f.PortStats()
+	if len(sts) != 1 {
+		t.Fatalf("应有 1 条，实际 %d", len(sts))
+	}
+	if sts[0].Rx != 1000 || sts[0].Tx != 2500 {
+		t.Fatalf("进出应分开记：rx=%d tx=%d", sts[0].Rx, sts[0].Tx)
+	}
+	if sts[0].Port != port {
+		t.Fatalf("端口对不上: %d", sts[0].Port)
+	}
+}

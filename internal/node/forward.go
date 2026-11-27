@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -29,7 +30,10 @@ type fwd struct {
 	port   int
 	target atomic.Pointer[string]
 	ln     net.Listener
-	bytes  atomic.Int64
+	// rx / tx 分开记：商家按出向(tx)计费，面板上要能看出「哪条规则吃流量」，
+	// 混成一个总数就失去意义了。
+	rx     atomic.Int64
+	tx     atomic.Int64
 	conns  atomic.Int64
 	closed atomic.Bool
 }
@@ -138,15 +142,15 @@ func (f *Forwarder) handle(cur *fwd, c net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(up, c)
-		cur.bytes.Add(n)
+		n, _ := io.Copy(up, c) // 客户端 -> 上游，对节点来说是收（入向）
+		cur.rx.Add(n)
 		f.acc.Add(n)
 		closeWrite(up)
 	}()
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(c, up)
-		cur.bytes.Add(n)
+		n, _ := io.Copy(c, up) // 上游 -> 客户端，对节点来说是发（出向）
+		cur.tx.Add(n)
 		f.acc.Add(n)
 		closeWrite(c)
 	}()
@@ -171,18 +175,31 @@ func closeWrite(c net.Conn) {
 // BytesRead 累计转发字节数
 func (f *Forwarder) BytesRead() int64 { return f.acc.Load() }
 
-// Stats 返回每个监听端口的连接数和字节数（调试用）
-func (f *Forwarder) Stats() map[int]map[string]any {
+// PortStat 一个监听端口的快照。字节数是累计值（单调增），
+// 速率由调用方两次采样求差得到。
+type PortStat struct {
+	Port   int    `json:"port"`
+	Target string `json:"target"`
+	Rx     int64  `json:"-"`
+	Tx     int64  `json:"-"`
+	Conns  int64  `json:"conns"`
+}
+
+// PortStats 返回每个监听端口的累计收发量和当前连接数。
+func (f *Forwarder) PortStats() []PortStat {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := map[int]map[string]any{}
+	out := make([]PortStat, 0, len(f.m))
 	for port, v := range f.m {
-		out[port] = map[string]any{
-			"target": v.getTarget(),
-			"conns":  v.conns.Load(),
-			"bytes":  v.bytes.Load(),
-		}
+		out = append(out, PortStat{
+			Port:   port,
+			Target: v.getTarget(),
+			Rx:     v.rx.Load(),
+			Tx:     v.tx.Load(),
+			Conns:  v.conns.Load(),
+		})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
 	return out
 }
 

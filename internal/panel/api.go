@@ -312,6 +312,9 @@ func (a *API) listNodes(w http.ResponseWriter, r *http.Request) {
 		out = append(out, map[string]any{
 			"node":   n,
 			"online": online,
+			// rule_stats 单独带一份：node 里的 RuleStats 是 json:"-"，
+			// 那个标记是为了不让它写进 data.json（瞬时值落盘没意义）。
+			"rule_stats": n.RuleStats,
 			// 从没上报过的节点，显示「0 GB」会让人以为统计正常只是没流量，
 			// 实际是根本没数据。前端拿这个标志区分。
 			"never_reported": n.LastSeen == 0,
@@ -1317,6 +1320,17 @@ type statsReq struct {
 	ProbeAt     int64  `json:"probe_at"`
 	ProbeRTT    int64  `json:"probe_rtt_ms"`
 	ProbeErr    string `json:"probe_err"`
+
+	// Rules 每条规则的实时速率
+	Rules []agentRuleStat `json:"rules,omitempty"`
+}
+
+type agentRuleStat struct {
+	Port   int    `json:"port"`
+	Target string `json:"target"`
+	RxBps  int64  `json:"rx_bps"`
+	TxBps  int64  `json:"tx_bps"`
+	Conns  int64  `json:"conns"`
 }
 
 // agentStats 每两秒收一次节点的实时速率和负载。
@@ -1333,6 +1347,13 @@ func (a *API) agentStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, map[string]string{"error": "token_invalid"})
 		return
 	}
+	rules := make([]RuleStat, 0, len(in.Rules))
+	for _, rs := range in.Rules {
+		rules = append(rules, RuleStat{
+			Port: rs.Port, Target: rs.Target,
+			RxBps: rs.RxBps, TxBps: rs.TxBps, Conns: rs.Conns,
+		})
+	}
 	becameBad := a.store.UpdateMetrics(nodeID, Metrics{
 		RxBps: in.RxBps, TxBps: in.TxBps,
 		CPUPct: in.CPUPct, MemPct: in.MemPct, DiskPct: in.DiskPct,
@@ -1344,6 +1365,7 @@ func (a *API) agentStats(w http.ResponseWriter, r *http.Request) {
 		ProbeAt:     in.ProbeAt,
 		ProbeRTT:    in.ProbeRTT,
 		ProbeErr:    in.ProbeErr,
+		Rules:       rules,
 	})
 	if becameBad {
 		if n := a.store.Node(nodeID); n != nil {

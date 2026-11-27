@@ -78,12 +78,29 @@ type statsReq struct {
 	ProbeAt     int64  `json:"probe_at"`
 	ProbeRTT    int64  `json:"probe_rtt_ms"`
 	ProbeErr    string `json:"probe_err"`
+
+	// Rules 每条规则的实时速率，用来看「这台机器的带宽被哪条规则吃了」
+	Rules []ruleStat `json:"rules,omitempty"`
+}
+
+// ruleStat 单条转发规则的实时状态
+type ruleStat struct {
+	Port   int    `json:"port"`
+	Target string `json:"target"`
+	RxBps  int64  `json:"rx_bps"`
+	TxBps  int64  `json:"tx_bps"`
+	Conns  int64  `json:"conns"`
 }
 
 type Agent struct {
 	cnf   *Config
 	meter *NicMeter
 	fwd   *Forwarder
+
+	// 按规则算速率需要上一次的累计值和时刻
+	ruleMu   sync.Mutex
+	rulePrev map[int][2]int64 // port -> {rx, tx}
+	ruleAt   time.Time
 	probe *Prober
 	keyMu sync.RWMutex
 	key   string
@@ -312,6 +329,7 @@ func (a *Agent) pushStats() {
 		ProbeAt:     pAt,
 		ProbeRTT:    pRTT,
 		ProbeErr:    pErr,
+		Rules:       a.ruleStats(),
 	})
 	resp, err := a.hc.Post(a.cnf.Panel+"/agent/stats", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -322,6 +340,51 @@ func (a *Agent) pushStats() {
 }
 
 // Fingerprint 机器指纹，换机器就变，防止 token 被复用
+// ruleStats 把转发器的累计字节换成实时速率（两次采样求差）。
+// 没有上一次采样时返回零速率，不能拿累计值当速率。
+func (a *Agent) ruleStats() []ruleStat {
+	now := time.Now()
+	cur := a.fwd.PortStats()
+
+	a.ruleMu.Lock()
+	defer a.ruleMu.Unlock()
+	if a.rulePrev == nil {
+		a.rulePrev = map[int][2]int64{}
+	}
+	dt := now.Sub(a.ruleAt).Seconds()
+
+	out := make([]ruleStat, 0, len(cur))
+	for _, st := range cur {
+		prev, seen := a.rulePrev[st.Port]
+		var rxBps, txBps int64
+		if seen && dt > 0.2 {
+			if d := st.Rx - prev[0]; d > 0 {
+				rxBps = int64(float64(d) / dt)
+			}
+			if d := st.Tx - prev[1]; d > 0 {
+				txBps = int64(float64(d) / dt)
+			}
+		}
+		a.rulePrev[st.Port] = [2]int64{st.Rx, st.Tx}
+		out = append(out, ruleStat{
+			Port: st.Port, Target: st.Target,
+			RxBps: rxBps, TxBps: txBps, Conns: st.Conns,
+		})
+	}
+	// 规则被删了就把它的旧记录一并清掉
+	alive := map[int]bool{}
+	for _, st := range cur {
+		alive[st.Port] = true
+	}
+	for port := range a.rulePrev {
+		if !alive[port] {
+			delete(a.rulePrev, port)
+		}
+	}
+	a.ruleAt = now
+	return out
+}
+
 func Fingerprint() string {
 	h := sha256.New()
 	if b, err := os.ReadFile("/etc/machine-id"); err == nil {

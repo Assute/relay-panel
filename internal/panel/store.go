@@ -126,6 +126,10 @@ type Node struct {
 	IsBackup bool `json:"is_backup"`
 	// RTT 面板到该节点的 TCP 握手耗时（毫秒），-1 = 不可达
 	RTT       int   `json:"rtt"`
+
+	// RuleStats 每条转发规则的实时速率，由 2 秒快通道带上来。
+	// 不落盘：它是瞬时观测值，写进 data.json 只会把文件撞大而且没用。
+	RuleStats []RuleStat `json:"-"`
 	LastProbe int64 `json:"last_probe"`
 
 	Token       string `json:"token"`        // 一次性，注册后作废
@@ -749,6 +753,15 @@ func (s *Store) AuthStats(key, fp string) (int64, bool) {
 const probeFailLimit = 3
 
 // Metrics 一次 /agent/stats 带回来的观测值。
+// RuleStat 单条规则在这台节点上的实时状态
+type RuleStat struct {
+	Port   int    `json:"port"`
+	Target string `json:"target"`
+	RxBps  int64  `json:"rx_bps"`
+	TxBps  int64  `json:"tx_bps"`
+	Conns  int64  `json:"conns"`
+}
+
 type Metrics struct {
 	RxBps   int64
 	TxBps   int64
@@ -764,6 +777,9 @@ type Metrics struct {
 	ProbeAt     int64
 	ProbeRTT    int64
 	ProbeErr    string
+
+	// Rules 每条转发规则的实时速率
+	Rules []RuleStat
 }
 
 // UpdateMetrics 只更新展示用的实时字段，不落盘。
@@ -785,6 +801,7 @@ func (s *Store) UpdateMetrics(nodeID int64, m Metrics) (becameUnreachable bool) 
 			n.Iface = m.Iface
 		}
 
+		n.RuleStats = m.Rules
 		n.ProbeTarget = m.ProbeTarget
 		n.ProbeOK, n.ProbeDone = m.ProbeOK, m.ProbeDone
 		n.ProbeFails = m.ProbeFails

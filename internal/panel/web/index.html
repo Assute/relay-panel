@@ -336,6 +336,7 @@ let S = {
   sel: new Set(),           // 表格选中的 id
   allRules: [],             // 所有分组的规则，线路页折叠列表用
   collapsed: new Set(),     // 折叠起来的分组 id
+  expanded: new Set(),      // 展开了规则明细的节点 id
 };
 
 document.documentElement.dataset.theme = S.theme;
@@ -426,6 +427,12 @@ function patchLive(){
     put('online', onlineCell(x));
     put('usage', usageCell(x));
     put('seen', ago(x.node.last_seen));
+
+    // 展开的规则明细也要跟着刷，不然展开后数字是死的
+    if(S.expanded.has(x.node.id)){
+      const body = document.getElementById('sub-body-'+x.node.id);
+      if(body) body.innerHTML = ruleStatTable(x.rule_stats||[]);
+    }
   });
   const box = document.getElementById('liveRate');
   if(box){
@@ -887,12 +894,18 @@ function viewNodes(){
         const n=x.node, isCur=S.cur.current_node===n.id;
         const nodeTarget = (S.settings||{}).node_stamp || '';
         const outdate = n.ip && nodeTarget && n.agent_stamp !== nodeTarget;
+        const rs = x.rule_stats || [];
+        const open = S.expanded.has(n.id);
         return `<tr data-node="${n.id}">
           <td><input type="checkbox" data-sel="node" data-id="${n.id}" onchange="selOne(this)"></td>
           <td class="dim mono">${n.sort_order}</td>
-          <td>${esc(n.name)}${isCur?' <span class="tag t-info">当前</span>':''}${n.is_backup?' <span class="tag t-warn">备用</span>':''}
+          <td>
+            <span style="display:flex;align-items:center;gap:6px">
+              ${rs.length?`<button class="icon ghost" style="padding:0;width:18px" title="展开/收起规则明细" onclick="toggleNodeRules(${n.id})"><span class="caret ${open?'open':''}">${I.chevron}</span></button>`:'<span style="width:18px;display:inline-block"></span>'}
+              <span style="min-width:0">${esc(n.name)}${isCur?' <span class="tag t-info">当前</span>':''}${n.is_backup?' <span class="tag t-warn">备用</span>':''}
             <div class="dim sm mono">${n.ip?esc(n.ip):'<span style="color:var(--warn)">IP 待上报</span>'} · ${esc(n.iface||'—')} · ${esc(n.bill_mode||'—')} · ${rttText(n.rtt)}</div>
-            <div class="dim sm mono" style="opacity:.75">节点端 ${esc(n.agent_stamp||'未知（旧版二进制）')}</div></td>
+            <div class="dim sm mono" style="opacity:.75">节点端 ${esc(n.agent_stamp||'未知（旧版二进制）')}</div></span>
+            </span></td>
           <td>${statusTag(n.status)}
             <div class="sm" style="margin-top:3px">
               <span class="dim">${x.online?'在线':'离线'}</span></div></td>
@@ -910,6 +923,14 @@ function viewNodes(){
             ${isCur?'':(n.ip?`<button class="icon ghost" title="切到这台" onclick="promote(${n.id})">${I.swap}</button>`:`<button class="icon ghost" disabled title="IP 未上报，无法切换">${I.swap}</button>`)}
             <button class="icon ghost" title="清零本周期" onclick="resetNode(${n.id})">${I.broom}</button>
             <button class="icon ghost" title="删除" onclick="delNode(${n.id})">${I.trash}</button>
+          </td>
+        </tr>
+        <tr class="subrow" data-sub="${n.id}" style="${open?'':'display:none'}">
+          <td colspan="11" style="padding:0;border-top:none">
+            <div style="padding:10px 14px 12px;background:var(--hover)">
+              <div class="dim sm" style="margin-bottom:8px">这台机器上每条规则的实时速率（出向 = 商家计费方向）</div>
+              <div id="sub-body-${n.id}">${ruleStatTable(rs)}</div>
+            </div>
           </td>
         </tr>`;
       }).join(''):`<tr><td colspan="11"><div class="empty">${I.empty}
@@ -1452,6 +1473,40 @@ function copyCmd(){
   }else{
     toast('请手动选中命令后复制');
   }
+}
+
+
+/* ---------- 节点下链：每条规则的实时速率 ---------- */
+function toggleNodeRules(id){
+  if(S.expanded.has(id)) S.expanded.delete(id); else S.expanded.add(id);
+  render();
+}
+
+function ruleStatTable(rs){
+  if(!rs.length) return '<div class="dim sm">这台还没上报规则数据（节点端需要是新版）</div>';
+  // 按出向速率排序，吃流量的排前面
+  const sorted = [...rs].sort((a,b)=>(b.tx_bps||0)-(a.tx_bps||0));
+  const total = sorted.reduce((s,x)=>s+(x.tx_bps||0),0);
+  return `<table style="width:100%"><thead><tr>
+      <th style="width:96px">端口</th>
+      <th>转发目标</th>
+      <th style="width:110px">出向（tx）</th>
+      <th style="width:110px">入向（rx）</th>
+      <th style="width:76px">连接</th>
+      <th style="width:100px">占比</th>
+    </tr></thead><tbody>
+    ${sorted.map(r=>{
+      const pctv = total>0 ? Math.round((r.tx_bps||0)/total*100) : 0;
+      return `<tr>
+        <td class="mono">${r.port}</td>
+        <td class="mono sm">${esc(r.target||'—')}</td>
+        <td class="rate">${rate(r.tx_bps||0)}</td>
+        <td class="sm">${rate(r.rx_bps||0)}</td>
+        <td class="sm dim">${r.conns||0}</td>
+        <td><div class="bar"><i style="width:${pctv}%"></i></div><span class="dim sm">${pctv}%</span></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>`;
 }
 
 /* ---------- 远程安装 ---------- */

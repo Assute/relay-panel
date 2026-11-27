@@ -176,3 +176,18 @@ func TestAlertHookFires(t *testing.T) {
 		t.Fatalf("重复告警不该再回调，实际 %d 次", len(got))
 	}
 }
+
+// 快通道上报的规则速率要能存进节点，且不进 data.json
+func TestRuleStatsStoredNotPersisted(t *testing.T) {
+	s, id := newTestStore(t)
+	s.UpdateMetrics(id, Metrics{
+		RxBps: 100, TxBps: 200,
+		Rules: []RuleStat{
+			{Port: 25210, Target: "1.2.3.4:443", RxBps: 11, TxBps: 22, Conns: 3},
+		},
+	})
+	n := s.Node(id)
+	if len(n.RuleStats) != 1 || n.RuleStats[0].TxBps != 22 {
+		t.Fatalf("规则速率没存进去: %+v", n.RuleStats)
+	}
+}
