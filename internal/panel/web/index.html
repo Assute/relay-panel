@@ -1490,8 +1490,16 @@ function ruleNameByPort(port){
 
 function ruleStatTable(rs){
   if(!rs.length) return '<div class="dim sm">这台还没上报规则数据（节点端需要是新版）</div>';
-  // 按出向速率排序，吃流量的排前面
-  const sorted = [...rs].sort((a,b)=>(b.tx_bps||0)-(a.tx_bps||0));
+  // 按规则列表里的顺序排（用户自己排好的那个顺序），
+  // 不跟着速率变：每 2 秒跳一次行，根本看不清哪条是哪条。
+  // 没在规则列表里找到的（刚删、跨分组）按端口号排末尾。
+  const order = new Map();
+  (S.allRules||[]).forEach((r,i)=>order.set(r.listen_port, i));
+  const sorted = [...rs].sort((a,b)=>{
+    const ia = order.has(a.port) ? order.get(a.port) : 1e9;
+    const ib = order.has(b.port) ? order.get(b.port) : 1e9;
+    return ia !== ib ? ia - ib : a.port - b.port;
+  });
   const total = sorted.reduce((s,x)=>s+(x.tx_bps||0),0);
   return `<table style="width:100%"><thead><tr>
       <th style="width:150px">规则</th>
