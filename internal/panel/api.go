@@ -813,6 +813,23 @@ func (a *API) saveSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+// pickCred 找这台机器该用哪份 SSH 凭据。三级回退：
+//
+//  1. 节点上记的 CredID —— 最准，换了 IP 也能找回自己那一条
+//  2. 当前 IP —— 没记 CredID 的老节点，IP 没变就靠这个
+//  3. 最近用过的那份密码 —— 自用机器通常同一个 root 密码
+//
+// 都没有就返回 nil，让调用方报错。
+func (a *API) pickCred(n *Node) *Cred {
+	if c := a.store.CredByID(n.CredID); c != nil && c.Password != "" {
+		return c
+	}
+	if c := a.store.CredByIP(n.IP); c != nil && c.Password != "" {
+		return c
+	}
+	return a.store.LastCred()
+}
+
 // updateNodes 一键更新节点：把面板里嵌的 node 推过去重启，
 // 不动配置、不动凭证、不动累计用量。
 //
@@ -865,7 +882,7 @@ func (a *API) updateNodes(w http.ResponseWriter, r *http.Request) {
 				results[i] = res
 				return
 			}
-			cred := a.store.CredByIP(n.IP)
+			cred := a.pickCred(n)
 			if cred == nil || cred.Password == "" {
 				res.Error = "没有这台的 SSH 密码：之前用「添加服务器」装过才会记住"
 				results[i] = res
@@ -886,6 +903,15 @@ func (a *API) updateNodes(w http.ResponseWriter, r *http.Request) {
 			} else {
 				res.OK = true
 				log.Printf("节点更新完成 node %d (%s)", n.ID, n.Name)
+				// 老节点没记凭据主键（靠 IP 或通用密码碰对的），
+				// 顺手钉上，下次换了 IP 也不用再碰运气。
+				if n.CredID == 0 && cred.ID > 0 {
+					nn := *n
+					nn.CredID = cred.ID
+					if err := a.store.UpdateNode(nn); err != nil {
+						log.Printf("记住凭据主键失败: %v", err)
+					}
+				}
 				// 指纹可能变了（重装过），顺手更新
 				if fp != "" && fp != cred.HostKey {
 					c := *cred
@@ -1209,11 +1235,18 @@ func (a *API) installServer(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// 不管成没成都记住：成功了下次不用再填，失败了用户改完能直接重试
-	if _, err := a.store.SaveCred(Cred{
+	if saved, err := a.store.SaveCred(Cred{
 		Name: name, IP: in.IP, Port: in.SSHPort,
 		User: in.User, Password: in.Password, HostKey: fp,
 	}); err != nil {
 		log.Printf("保存凭据失败: %v", err)
+	} else if saved.ID > 0 && n.CredID != saved.ID {
+		// 把凭据主键钉在节点上：以后这台机器换了 IP，
+		// 点更新也能找回自己的密码，不会说「没用添加服务器装过」。
+		n.CredID = saved.ID
+		if err := a.store.UpdateNode(*n); err != nil {
+			log.Printf("记住凭据主键失败: %v", err)
+		}
 	}
 
 	a.kick()

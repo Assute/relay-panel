@@ -387,3 +387,40 @@ func TestListServersHidesPassword(t *testing.T) {
 		t.Fatal("应该告诉前端「记住了一个密码」")
 	}
 }
+
+// 节点换了 IP，凭据要能找回来。三级回退逐个验。
+func TestPickCredFallbacks(t *testing.T) {
+	store, srv, _ := newInstallFixture(t)
+	api := NewAPI(store, nil, NewSessionStore(), nil, nil)
+	_ = srv
+
+	// 没任何凭据
+	n := &Node{ID: 1, IP: "10.0.0.1"}
+	if c := api.pickCred(n); c != nil {
+		t.Fatalf("没密码时应返回 nil，实际 %+v", c)
+	}
+
+	// 录一条（旧 IP）
+	old, err := store.SaveCred(Cred{IP: "10.0.0.1", Port: 22, User: "root", Password: "pw-old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1) 按 CredID：节点 IP 已经变成 10.0.0.2，但记得凭据主键
+	n = &Node{ID: 1, IP: "10.0.0.2", CredID: old.ID}
+	if c := api.pickCred(n); c == nil || c.Password != "pw-old" {
+		t.Fatalf("应按 CredID 命中，实际 %+v", c)
+	}
+
+	// 2) 按当前 IP：没记 CredID 的老节点，IP 没变
+	n = &Node{ID: 1, IP: "10.0.0.1"}
+	if c := api.pickCred(n); c == nil || c.Password != "pw-old" {
+		t.Fatalf("应按 IP 命中，实际 %+v", c)
+	}
+
+	// 3) 都对不上：IP 变了、也没记 CredID —— 回退到通用密码
+	n = &Node{ID: 1, IP: "10.0.0.9"}
+	if c := api.pickCred(n); c == nil || c.Password != "pw-old" {
+		t.Fatalf("应回退到通用密码，实际 %+v", c)
+	}
+}

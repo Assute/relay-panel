@@ -132,6 +132,9 @@ type Node struct {
 	RuleStats []RuleStat `json:"-"`
 	LastProbe int64 `json:"last_probe"`
 
+	// CredID 这台机器的 SSH 凭据主键。
+	// 不能只靠 IP 查：换了 IP 就找不到密码了。
+	CredID      int64  `json:"cred_id,omitempty"`
 	Token       string `json:"token"`        // 一次性，注册后作废
 	SessionKey  string `json:"session_key"`  // 注册后换发的长期凭证
 	Fingerprint string `json:"fingerprint"`
@@ -516,6 +519,8 @@ func (s *Store) UpdateNode(n Node) error {
 	for i := range s.db.Nodes {
 		if s.db.Nodes[i].ID == n.ID {
 			// 不允许通过这个口改身份字段
+			// 编辑对话框里没有这个字段，不保留就丢了
+			n.CredID = s.db.Nodes[i].CredID
 			n.Token = s.db.Nodes[i].Token
 			n.SessionKey = s.db.Nodes[i].SessionKey
 			n.Fingerprint = s.db.Nodes[i].Fingerprint
@@ -660,6 +665,22 @@ func (s *Store) CredByIP(ip string) *Cred {
 	defer s.mu.RUnlock()
 	for i := range s.db.Creds {
 		if s.db.Creds[i].IP == ip {
+			c := s.db.Creds[i]
+			return &c
+		}
+	}
+	return nil
+}
+
+// CredByID 按主键取凭据。节点换了 IP 也能找回自己的密码，靠的就是它。
+func (s *Store) CredByID(id int64) *Cred {
+	if id <= 0 {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := range s.db.Creds {
+		if s.db.Creds[i].ID == id {
 			c := s.db.Creds[i]
 			return &c
 		}
