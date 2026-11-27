@@ -1482,28 +1482,40 @@ function toggleNodeRules(id){
   render();
 }
 
+function ruleNameByPort(port){
+  const r = (S.allRules||[]).find(x=>x.listen_port===port);
+  if(!r) return "";
+  return r.name || "";
+}
+
 function ruleStatTable(rs){
   if(!rs.length) return '<div class="dim sm">这台还没上报规则数据（节点端需要是新版）</div>';
   // 按出向速率排序，吃流量的排前面
   const sorted = [...rs].sort((a,b)=>(b.tx_bps||0)-(a.tx_bps||0));
   const total = sorted.reduce((s,x)=>s+(x.tx_bps||0),0);
   return `<table style="width:100%"><thead><tr>
-      <th style="width:96px">端口</th>
-      <th>转发目标</th>
-      <th style="width:110px">出向（tx）</th>
-      <th style="width:110px">入向（rx）</th>
-      <th style="width:76px">连接</th>
-      <th style="width:100px">占比</th>
+      <th style="width:150px">规则</th>
+      <th style="width:80px">端口</th>
+      <th style="width:300px">转发目标</th>
+      <th style="width:120px">出向（tx）</th>
+      <th style="width:120px">入向（rx）</th>
+      <th style="width:74px">连接</th>
+      <th>占比</th>
     </tr></thead><tbody>
     ${sorted.map(r=>{
       const pctv = total>0 ? Math.round((r.tx_bps||0)/total*100) : 0;
+      const nm = ruleNameByPort(r.port);
       return `<tr>
+        <td>${nm?esc(nm):'<span class="dim">未命名</span>'}</td>
         <td class="mono">${r.port}</td>
         <td class="mono sm">${esc(r.target||'—')}</td>
         <td class="rate">${rate(r.tx_bps||0)}</td>
         <td class="sm">${rate(r.rx_bps||0)}</td>
         <td class="sm dim">${r.conns||0}</td>
-        <td><div class="bar"><i style="width:${pctv}%"></i></div><span class="dim sm">${pctv}%</span></td>
+        <td><div style="display:flex;align-items:center;gap:8px">
+          <div class="bar" style="flex:1;min-width:60px"><i style="width:${pctv}%"></i></div>
+          <span class="dim sm" style="width:36px;text-align:right">${pctv}%</span>
+        </div></td>
       </tr>`;
     }).join('')}
     </tbody></table>`;
