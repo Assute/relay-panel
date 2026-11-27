@@ -1492,7 +1492,6 @@ function ruleStatTable(rs){
   if(!rs.length) return '<div class="dim sm">这台还没上报规则数据（节点端需要是新版）</div>';
   // 按规则列表里的顺序排（用户自己排好的那个顺序），
   // 不跟着速率变：每 2 秒跳一次行，根本看不清哪条是哪条。
-  // 没在规则列表里找到的（刚删、跨分组）按端口号排末尾。
   const order = new Map();
   (S.allRules||[]).forEach((r,i)=>order.set(r.listen_port, i));
   const sorted = [...rs].sort((a,b)=>{
@@ -1500,13 +1499,17 @@ function ruleStatTable(rs){
     const ib = order.has(b.port) ? order.get(b.port) : 1e9;
     return ia !== ib ? ia - ib : a.port - b.port;
   });
-  const total = sorted.reduce((s,x)=>s+(x.tx_bps||0),0);
+
+  const sumTx = sorted.reduce((a,x)=>a+(x.tx_bps||0),0);
+  const sumRx = sorted.reduce((a,x)=>a+(x.rx_bps||0),0);
+  const total = sumTx;
+
   return `<table style="width:100%"><thead><tr>
       <th style="width:150px">规则</th>
       <th style="width:80px">端口</th>
       <th style="width:300px">转发目标</th>
-      <th style="width:120px">出向（tx）</th>
-      <th style="width:120px">入向（rx）</th>
+      <th style="width:120px" title="上游返回给客户端的数据，也就是用户下载">用户下载</th>
+      <th style="width:120px" title="客户端发给上游的数据，也就是用户上传">用户上传</th>
       <th style="width:74px">连接</th>
       <th>占比</th>
     </tr></thead><tbody>
@@ -1526,7 +1529,19 @@ function ruleStatTable(rs){
         </div></td>
       </tr>`;
     }).join('')}
-    </tbody></table>`;
+    <tr style="border-top:1px solid var(--line)">
+      <td class="dim sm">合计</td><td></td><td></td>
+      <td class="rate">${rate(sumTx)}</td>
+      <td class="sm">${rate(sumRx)}</td>
+      <td></td><td></td>
+    </tr>
+    </tbody></table>
+    <div class="hint" style="margin-top:8px">
+      这两列是<b>用户方向</b>的转发量。上面那行「上行/下行」是<b>网卡口径</b>——
+      一个字节进节点、出节点各计一次，
+      所以网卡上行≈网卡下行≈用户下载+用户上传，
+      两者本来就不该相等。
+    </div>`;
 }
 
 /* ---------- 远程安装 ---------- */
