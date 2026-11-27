@@ -1500,9 +1500,7 @@ function ruleStatTable(rs){
     return ia !== ib ? ia - ib : a.port - b.port;
   });
 
-  const sumTx = sorted.reduce((a,x)=>a+(x.tx_bps||0),0);
-  const sumRx = sorted.reduce((a,x)=>a+(x.rx_bps||0),0);
-  const total = sumTx;
+  const total = sorted.reduce((a,x)=>a+(x.tx_bps||0),0);
 
   return `<table style="width:100%"><thead><tr>
       <th style="width:150px">规则</th>
@@ -1529,12 +1527,6 @@ function ruleStatTable(rs){
         </div></td>
       </tr>`;
     }).join('')}
-    <tr style="border-top:1px solid var(--line)">
-      <td class="dim sm">合计</td><td></td><td></td>
-      <td class="rate">${rate(sumTx)}</td>
-      <td class="sm">${rate(sumRx)}</td>
-      <td></td><td></td>
-    </tr>
     </tbody></table>
     <div class="hint" style="margin-top:8px">
       这两列是<b>用户方向</b>的转发量。上面那行「上行/下行」是<b>网卡口径</b>——
