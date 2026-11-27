@@ -4,6 +4,7 @@ package node
 
 import (
 	"net"
+	"io"
 	"testing"
 	"time"
 )
@@ -152,5 +153,57 @@ func TestPortStatsDirections(t *testing.T) {
 	}
 	if sts[0].Port != port {
 		t.Fatalf("端口对不上: %d", sts[0].Port)
+	}
+}
+
+// 长连接期间字节数必须是实时的。
+// 直接用 io.Copy 的返回值会在连接断开时才更新，
+// 面板上就会出现「节点 115 Mbps、规则加起来才 3 Mbps」。
+func TestRuleStatsCountWhileOpen(t *testing.T) {
+	// 一个一直读、不回写的上游
+	up, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("listen failed")
+	}
+	defer up.Close()
+	go func() {
+		for {
+			c, err := up.Accept()
+			if err != nil {
+				return
+			}
+			go func() { io.Copy(io.Discard, c) }()
+		}
+	}()
+
+	const port = 45124
+	f := NewForwarder()
+	rules := []Rule{{ListenPort: port, TargetHost: "127.0.0.1", TargetPort: up.Addr().(*net.TCPAddr).Port}}
+	if err := f.Sync(rules); err != nil {
+		t.Skipf("端口 %d 占用: %v", port, err)
+	}
+	defer f.Sync(nil)
+
+	conn, err := net.Dial("tcp", "127.0.0.1:45124")
+	if err != nil {
+		t.Fatalf("连不上转发端口: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write(make([]byte, 8192)); err != nil {
+		t.Fatal(err)
+	}
+	// 连接不断，等一会儿让数据过去
+	time.Sleep(300 * time.Millisecond)
+
+	sts := f.PortStats()
+	if len(sts) != 1 {
+		t.Fatalf("应有 1 条规则，实际 %d", len(sts))
+	}
+	if sts[0].Rx == 0 {
+		t.Fatal("连接还开着呢，字节数应该是实时的（这就是 115Mbps vs 3Mbps 的原因）")
+	}
+	if got := f.BytesRead(); got == 0 {
+		t.Fatal("转发总量也该实时累加")
 	}
 }

@@ -140,18 +140,18 @@ func (f *Forwarder) handle(cur *fwd, c net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// 必须边转边计，不能等 io.Copy 返回。
+	// io.Copy 是阻塞的，字节数要到连接断开那一刻才抛出来；
+	// 一条持续几小时的隧道在期间全不计数，
+	// 面板上就会出现「节点 115 Mbps、规则加起来 3 Mbps」这种对不上的情况。
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(up, c) // 客户端 -> 上游，对节点来说是收（入向）
-		cur.rx.Add(n)
-		f.acc.Add(n)
+		_, _ = io.Copy(meterWriter{w: up, n: &cur.rx, acc: &f.acc}, c) // 客户端 -> 上游（入向）
 		closeWrite(up)
 	}()
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(c, up) // 上游 -> 客户端，对节点来说是发（出向）
-		cur.tx.Add(n)
-		f.acc.Add(n)
+		_, _ = io.Copy(meterWriter{w: c, n: &cur.tx, acc: &f.acc}, up) // 上游 -> 客户端（出向）
 		closeWrite(c)
 	}()
 
@@ -212,4 +212,23 @@ func (f *Forwarder) ActiveConns() int64 {
 		n += v.conns.Load()
 	}
 	return n
+}
+
+// meterWriter 边写边累加，让规则速率是实时的。
+// 直接用 io.Copy 的返回值只能在连接结束时拿到总数。
+type meterWriter struct {
+	w   io.Writer
+	n   *atomic.Int64 // 这条规则在这个方向上的累计
+	acc *atomic.Int64 // 整个转发器的累计（RelayAcc）
+}
+
+func (m meterWriter) Write(p []byte) (int, error) {
+	k, err := m.w.Write(p)
+	if k > 0 {
+		m.n.Add(int64(k))
+		if m.acc != nil {
+			m.acc.Add(int64(k))
+		}
+	}
+	return k, err
 }
